@@ -95,21 +95,28 @@ async function refresh() {
 }
 
 // ------------------------------------------------------------------ sign-in
+// Sign-in and first-run are a page of their own: no sidebar, no mail list,
+// nothing of the app but its colours — the brand, one card, a quiet foot.
 async function signOutView() {
+  document.title = "Selfmail · sign in";
   $("#shell").hidden = true;
   const host = $("#loginHost");
   let first = false, users = [];
   try { const s = await api("session"); first = !!s.firstRun; } catch {}
+  const foot = `<div class="authfoot">Selfmail ${h(S.session?.version || "")} · a Weft addon · on Aegis × Burrow</div>`;
   if (first) {
-    host.innerHTML = `<div class="login-wrap"><div class="card login-card">
-      <div class="login-brand"><img src="logo.svg" alt="">Selfmail</div>
-      <div class="field"><span>Account name (its address: name@your-domain)</span><input class="input" id="lUser" placeholder="me" spellcheck="false" autocapitalize="none"></div>
-      <div class="field"><span>Your name (optional)</span><input class="input" id="lName"></div>
-      <div class="field"><span>Password (8+ characters)</span><input class="input" id="lPass" type="password"></div>
-      <div class="field"><span>Again</span><input class="input" id="lPass2" type="password"></div>
-      <button class="btn primary wide" id="lGo">Create the first account</button>
-      <div class="note" id="lMsg" hidden></div>
-    </div></div>`;
+    host.innerHTML = `<div class="authpage">
+      <div class="authbrand"><img src="logo.svg" alt="">Selfmail</div>
+      <div class="authsub">Create the first account — it becomes the admin.</div>
+      <div class="card authcard">
+        <div class="field"><span>Account name (its address: name@your-domain)</span><input class="input" id="lUser" placeholder="me" spellcheck="false" autocapitalize="none"></div>
+        <div class="field"><span>Your name (optional)</span><input class="input" id="lName"></div>
+        <div class="field"><span>Password (8+ characters)</span><input class="input" id="lPass" type="password"></div>
+        <div class="field"><span>Again</span><input class="input" id="lPass2" type="password"></div>
+        <button class="btn primary wide" id="lGo">Create the first account</button>
+        <div class="note" id="lMsg" hidden></div>
+      </div>
+      ${foot}</div>`;
     $("#lGo").addEventListener("click", async () => {
       const msg = $("#lMsg"), u = $("#lUser").value.trim().toLowerCase(), p = $("#lPass").value;
       if (p !== $("#lPass2").value) { msg.hidden = false; msg.className = "note bad"; msg.textContent = "The two passwords differ."; return; }
@@ -121,33 +128,41 @@ async function signOutView() {
     return;
   }
   try { users = await api("users"); } catch {}
-  host.innerHTML = `<div class="login-wrap"><div class="card login-card">
-    <div class="login-brand"><img src="logo.svg" alt="">Selfmail</div>
-    <div class="field"><span>Account</span><div class="userpick"><select class="input" id="lUser">
-      <option value="">Pick an account…</option>
-      ${users.map((x) => `<option value="${h(x.username)}">${h(x.name || x.username)} · ${h(x.username)}${x.role === "admin" ? " (admin)" : ""}</option>`).join("")}
-    </select></div></div>
-    <button class="btn primary wide" id="lGo" disabled>Sign in</button>
-    <div class="note" id="lMsg" hidden></div>
-  </div></div>`;
-  const sel = $("#lUser"), go = $("#lGo");
+  host.innerHTML = `<div class="authpage">
+    <div class="authbrand"><img src="logo.svg" alt="">Selfmail</div>
+    <div class="authsub">Sign in to the mailbox.</div>
+    <div class="card authcard">
+      <div class="field"><span>Account</span><div class="userpick"><select class="input" id="lUser">
+        <option value="">Pick an account…</option>
+        ${users.map((x) => `<option value="${h(x.username)}">${h(x.name || x.username)} · ${h(x.username)}${x.role === "admin" ? " (admin)" : ""}</option>`).join("")}
+      </select></div></div>
+      <div class="field" id="pwField" hidden><span>Password</span><input class="input" id="lPass" type="password"></div>
+      <button class="btn primary wide" id="lGo" disabled>Sign in</button>
+      <div class="note" id="lMsg" hidden></div>
+    </div>
+    ${foot}</div>`;
+  const sel = $("#lUser"), go = $("#lGo"), pw = $("#lPass");
+  const submit = async () => {
+    if (!sel.value || !pw.value) return;
+    try { await api("login", { method: "POST", body: { username: sel.value, password: pw.value } }); location.reload(); }
+    catch (e) { pw.value = ""; pw.focus(); const msg = $("#lMsg"); msg.hidden = false; msg.className = "note bad"; msg.textContent = e.message; }
+  };
   sel.addEventListener("change", () => {
-    if (!sel.value) return;
-    const u = users.find((x) => x.username === sel.value);
-    const m = modal(`<h2>${h(u?.name || u?.username)}</h2>
-      <div class="faint small mono">${h(u?.username)}</div>
-      <div class="field"><span>Password</span><input class="input" id="pPass" type="password" autofocus></div>
-      <div class="row end"><button class="btn ghost" data-close>Cancel</button><button class="btn primary" id="pGo">Sign in</button></div>`);
-    const pw = $("#pPass", m.el);
-    pw.focus();
-    const submit = async () => {
-      try { await api("login", { method: "POST", body: { username: sel.value, password: pw.value } }); m.close(); location.reload(); }
-      catch (e) { pw.value = ""; pw.focus(); toast(e.message); }
-    };
-    $("#pGo", m.el).addEventListener("click", submit);
-    pw.addEventListener("keydown", (e) => { if (e.key === "Enter") submit(); });
+    $("#pwField").hidden = !sel.value;
+    go.disabled = !sel.value;
+    if (sel.value) pw.focus();
   });
+  pw.addEventListener("keydown", (e) => { if (e.key === "Enter") submit(); });
+  go.addEventListener("click", submit);
 }
+
+const ago = (t) => {
+  const s = Math.max(0, Math.round((Date.now() - Number(t || 0)) / 1000));
+  if (s < 60) return "just now";
+  if (s < 3600) return `${Math.round(s / 60)} minutes ago`;
+  if (s < 86400) return `${Math.round(s / 3600)} hours ago`;
+  return `${Math.round(s / 86400)} days ago`;
+};
 
 // ------------------------------------------------------------------ routing
 const VIEWS = {};
@@ -420,17 +435,73 @@ async function send() {
 VIEWS.compose = compose;
 
 // ------------------------------------------------------------------ auto-reply
+// The answer editors (an account's preset, the not-found answer): plain text
+// or HTML with the composer's own little toolbar, so a machine-sent reply can
+// be as styled as a written one.
+function editorField(id, a) {
+  return `<div class="field"><span>Answer <span class="seg"><button type="button" id="${id}SegT" class="on">Plain text</button><button type="button" id="${id}SegH">HTML</button></span></span>
+    <div id="${id}TextWrap"><textarea id="${id}Text" style="min-height:130px">${h(a.text || "")}</textarea></div>
+    <div id="${id}HtmlWrap" hidden>
+      <div class="htools" id="${id}Tools">
+        <button type="button" class="ht" data-cmd="bold" style="font-weight:750">B</button>
+        <button type="button" class="ht" data-cmd="italic" style="font-style:italic">I</button>
+        <button type="button" class="ht" data-cmd="underline" style="text-decoration:underline">U</button>
+        <button type="button" class="ht" data-cmd="strikeThrough" style="text-decoration:line-through">S</button>
+        <span class="hsep"></span>
+        <button type="button" class="ht" data-block="h3">Heading</button>
+        <button type="button" class="ht" data-block="p">Text</button>
+        <span class="hsep"></span>
+        <button type="button" class="ht" data-cmd="insertUnorderedList">• List</button>
+        <button type="button" class="ht" data-cmd="insertOrderedList">1. List</button>
+        <button type="button" class="ht" data-block="blockquote">Quote</button>
+        <span class="hsep"></span>
+        <button type="button" class="ht" id="${id}Link">Link</button>
+        <button type="button" class="ht" data-cmd="removeFormat">Clear</button>
+      </div>
+      <div class="htmled" id="${id}Html" contenteditable="true" role="textbox" aria-multiline="true"></div>
+    </div>
+  </div>`;
+}
+function wireEditor(id, a) {
+  const show = (mode) => {
+    const ta = $(`#${id}Text`), ed = $(`#${id}Html`);
+    $(`#${id}SegT`).classList.toggle("on", mode === "text");
+    $(`#${id}SegH`).classList.toggle("on", mode === "html");
+    $(`#${id}TextWrap`).hidden = mode !== "text";
+    $(`#${id}HtmlWrap`).hidden = mode !== "html";
+    if (mode === "html") { ed.innerHTML = ed.dataset.preload || textToHtml(ta.value); delete ed.dataset.preload; }
+    else ta.value = ed.innerText;
+  };
+  $(`#${id}SegT`).addEventListener("click", () => show("text"));
+  $(`#${id}SegH`).addEventListener("click", () => show("html"));
+  for (const b of $(`#${id}Tools`).querySelectorAll("[data-cmd]")) b.addEventListener("mousedown", (e) => { e.preventDefault(); document.execCommand(b.dataset.cmd, false, null); });
+  for (const b of $(`#${id}Tools`).querySelectorAll("[data-block]")) b.addEventListener("mousedown", (e) => { e.preventDefault(); document.execCommand("formatBlock", false, b.dataset.block); });
+  $(`#${id}Link`).addEventListener("mousedown", (e) => {
+    e.preventDefault();
+    const m = modal(`<h2>Link</h2>
+      <div class="field"><span>Address</span><input class="input" id="linkUrl" placeholder="https://…" spellcheck="false"></div>
+      <div class="row end"><button class="btn ghost" data-close>Cancel</button><button class="btn primary" id="linkGo">Insert</button></div>`);
+    $("#linkUrl", m.el).focus();
+    $("#linkGo", m.el).addEventListener("click", () => {
+      const u = $("#linkUrl", m.el).value.trim(); if (!u) return;
+      document.execCommand("createLink", false, u); m.close();
+    });
+  });
+  if (a.html) $(`#${id}Html`).dataset.preload = sanitizeHtml(a.html);
+}
+
 async function viewAuto() {
   let d;
   try { d = await api(`auto-reply${asParam()}`); } catch (e) { app.innerHTML = head("Auto-reply", "") + `<div class="note bad">${h(e.message)}</div>`; return; }
   const a = d.autoReply;
   const cooldowns = [[0, "every message"], [10, "10 minutes"], [60, "1 hour"], [360, "6 hours"], [1440, "a day"]];
-  app.innerHTML = asBar() + head("Auto-reply", `The preset answer sent from ${h(d.address || "this account")} when someone contacts it.`)
+  app.innerHTML = asBar() + head("Auto-reply", `The preset answer sent from ${h(d.address || "this account")} when someone contacts it — plain text or HTML.`)
     + `<div class="card">
       <div class="switchrow"><div class="grow"><b>Send the preset answer</b><span class="faint small">one per sender, per cooldown; never to this domain's own accounts or to robots</span></div>
         <label class="switch"><input type="checkbox" id="aOn" ${a.enabled ? "checked" : ""}><i></i></label></div>
       <div class="field mt"><span>Subject — <span class="mono">{subject}</span> is the message's subject</span><input class="input" id="aSubject" value="${h(a.subject)}"></div>
-      <div class="field"><span>Text — <span class="mono">{subject}</span>, <span class="mono">{sender}</span>, <span class="mono">{domain}</span></span><textarea id="aText" style="min-height:140px">${h(a.text)}</textarea></div>
+      ${editorField("aEd", { text: a.text, html: a.html })}
+      <div class="faint small" style="margin:-6px 0 10px"><span class="mono">{subject}</span>, <span class="mono">{sender}</span>, <span class="mono">{domain}</span> fill in on both sides.</div>
       <div class="field"><span>Cooldown</span><div class="selpick"><select class="input" id="aCool">${cooldowns.map(([v, l]) => `<option value="${v}" ${Number(a.cooldown) === v ? "selected" : ""}>${l}</option>`).join("")}</select></div></div>
       <div class="row">
         <button class="btn primary" id="aSave">Save</button>
@@ -439,10 +510,11 @@ async function viewAuto() {
       <div class="note" id="aMsg" hidden></div>
     </div>`;
   wireAsBar();
+  wireEditor("aEd", a);
   $("#aSave").addEventListener("click", async () => {
     const msg = $("#aMsg");
     try {
-      await api(`auto-reply${asParam()}`, { method: "PUT", body: { enabled: $("#aOn").checked, subject: $("#aSubject").value, text: $("#aText").value, cooldown: Number($("#aCool").value) } });
+      await api(`auto-reply${asParam()}`, { method: "PUT", body: { enabled: $("#aOn").checked, subject: $("#aSubject").value, text: $("#aEdText").value, html: $("#aEdHtml").innerHTML, cooldown: Number($("#aCool").value) } });
       msg.hidden = false; msg.className = "note ok"; msg.textContent = "Saved.";
     } catch (e) { msg.hidden = false; msg.className = "note bad"; msg.textContent = e.message; }
   });
@@ -491,47 +563,55 @@ async function viewDns() {
           <label class="switch"><input type="checkbox" data-dom="${h(z)}" ${dv.enabled.includes(z) ? "checked" : ""} ${z === dv.primary ? "disabled" : ""}><i></i></label></div>`).join("")}
       </div>` : "")
     + (st.inbound ? "" : `<div class="note">The inbound address isn't published yet, so the <span class="mono">forward-email</span> record shows its placeholder.</div>`)
-    + `<div class="row" style="margin-bottom:14px"><button class="btn primary" id="dnsCheckBtn">Check records</button><span class="faint small">against public DNS</span></div>
+    + `<div class="row" style="margin-bottom:14px"><button class="btn primary" id="dnsCheckBtn">Check again</button><span class="faint small">against public DNS, and the inbound address itself</span></div>
        <div class="note" id="dnsMsg" hidden></div>
        <div class="scroll"><table id="dnsTable"></table></div>`;
   $("#dnsCheckBtn").addEventListener("click", checkDns);
   const sel = $("#dnsPick");
-  if (sel) sel.addEventListener("change", () => { S.dnsDomain = sel.value; loadDns(); });
+  if (sel) sel.addEventListener("change", () => { S.dnsDomain = sel.value; checkDns(); });
   for (const sw of app.querySelectorAll("[data-dom]")) sw.addEventListener("change", async () => {
     try { await api("admin/domains", { method: "PUT", body: { domain: sw.dataset.dom, on: sw.checked } }); toast(`${sw.dataset.dom} ${sw.checked ? "served" : "off"}.`); viewDns(); }
     catch (e) { toast(e.message); viewDns(); }
   });
-  loadDns();
+  checkDns();          // the truth on arrival, not only on request
 }
-async function loadDns() {
-  const t = $("#dnsTable");
-  if (!t) return;
-  t.innerHTML = `<tr><td><span class="spin"></span> Loading…</td></tr>`;
-  let d;
-  try { d = await api(`dns${S.dnsDomain ? `?domain=${encodeURIComponent(S.dnsDomain)}` : ""}`); } catch (e) { t.innerHTML = `<tr><td>${h(e.message)}</td></tr>`; return; }
-  drawDns(d.records.map((r) => ({ ...r, found: "", ok: null })));
+async function checkDns() {
+  const b = $("#dnsCheckBtn"), t = $("#dnsTable");
+  if (!b) return;
+  if (t) t.innerHTML = `<tr><td><span class="spin"></span> Asking public DNS…</td></tr>`;
+  b.disabled = true; b.textContent = "Resolving…";
+  try {
+    const d = await api(`dns-check${S.dnsDomain ? `?domain=${encodeURIComponent(S.dnsDomain)}` : ""}`);
+    const p = d.inbound || { ok: false, url: "", detail: "not checked" };
+    // the last row is not a DNS record: it is the inbound address, asked from
+    // outside. Records being in place mean nothing if it stays silent.
+    const rows = [...d.records, {
+      key: "probe", type: "Ping", name: "the inbound address",
+      content: p.url || "(not published)", note: "The relay POSTs mail here; this row asks the address itself, across the internet.",
+      ok: p.ok, found: p.ok ? "answers" : (p.detail || ""), detail: p.ok ? "" : (p.detail || ""),
+    }];
+    drawDns(rows);
+    const el = $("#dnsMsg");
+    el.hidden = false;
+    el.className = "note " + (d.allGood ? "ok" : "bad");
+    el.textContent = d.allGood
+      ? `Every record answers (${d.ok}/${d.total}) and the inbound address answers from the internet. Mail can flow.`
+      : !p.url
+        ? "There is no inbound address yet — the host hasn't published the tunnel, so nothing in DNS can bring mail in. Check the Status page."
+        : !p.ok
+          ? `The records are ${d.ok}/${d.total}, but the inbound address does not answer from outside (${p.detail}). Mail will not arrive until it does — the tunnel may be down.`
+          : `${d.ok} of ${d.total} in place — records just added take a few minutes to show. Selfmail cannot add them for you: paste each Value into your DNS panel yourself.`;
+  } catch (e) { const el = $("#dnsMsg"); el.hidden = false; el.className = "note bad"; el.textContent = e.message; if (t) t.innerHTML = `<tr><td>${h(e.message)}</td></tr>`; }
+  finally { b.disabled = false; b.textContent = "Check again"; }
 }
 function drawDns(rows) {
   $("#dnsTable").innerHTML = `<tr><th>Type</th><th>Name</th><th>Value</th><th>Why</th><th>Public DNS says</th></tr>` +
     rows.map((r) => {
       const cell = r.ok == null ? '<span class="faint">—</span>' : r.ok
-        ? '<span class="dot ok"></span> <code>in place</code>'
+        ? `<span class="dot ok"></span> <code>${h(r.found || "in place")}</code>`
         : `<span class="dot bad"></span> <code>${h(r.found || "nothing")}</code>${r.detail ? `<div class="faint small">${h(r.detail)}</div>` : ""}`;
       return `<tr><td><b>${r.type}</b>${r.priority != null ? ` ${r.priority}` : ""}</td><td><code>${h(r.name)}</code></td><td><code>${h(r.content)}</code></td><td class="muted small">${h(r.note || "")}</td><td>${cell}</td></tr>`;
     }).join("");
-}
-async function checkDns() {
-  const b = $("#dnsCheckBtn");
-  b.disabled = true; b.textContent = "Resolving…";
-  try {
-    const d = await api(`dns-check${S.dnsDomain ? `?domain=${encodeURIComponent(S.dnsDomain)}` : ""}`);
-    drawDns(d.records);
-    const el = $("#dnsMsg");
-    el.hidden = false;
-    el.className = "note " + (d.allGood ? "ok" : "bad");
-    el.textContent = d.allGood ? `Every record answers (${d.ok}/${d.total}). Mail can flow.` : `${d.ok} of ${d.total} in place — records just added take a few minutes to show, and Selfmail cannot add them for you: paste each Value into your DNS panel yourself.`;
-  } catch (e) { const el = $("#dnsMsg"); el.hidden = false; el.className = "note bad"; el.textContent = e.message; }
-  finally { b.disabled = false; b.textContent = "Check records"; }
 }
 VIEWS.dns = viewDns;
 
@@ -541,15 +621,17 @@ async function viewStatus() {
     ["Domain", h(st.domain || "(none)")],
     ["Accounts", `${st.accounts ?? 0} (plus the service ones)`],
     ["Inbound", st.inbound ? `<span class="mono">${h(st.inbound)}</span>` : "not published"],
-    ["Webhook", st.tunnel ? `<span class="dot ok"></span> live` : '<span class="dot warn"></span> no tunnel yet'],
+    ["Webhook", st.tunnel ? '<span class="dot ok"></span> live' : `<span class="dot warn"></span> no tunnel yet${st.publishError ? `<div class="faint small">${h(st.publishError)}</div>` : ""}`],
     ["Mail", `${st.counts?.inbox ?? 0} in · ${st.counts?.sent ?? 0} sent · ${st.counts?.unread ?? 0} unread, all accounts`],
     ["Version", h(st.version || "")],
   ];
   app.innerHTML = head("Status", "The service at a glance.")
     + `<div class="card"><dl class="kv">${rows.map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join("")}</dl></div>
+       <div class="card"><h3>Update <span class="faint">— the app checks its own source every 3 hours</span></h3><div id="updBox"><span class="spin"></span> Reading the last check…</div></div>
        <div class="card"><h3>The local mail agent <span class="faint">— the thing that delivers what you send</span></h3>
          <div class="row"><button class="btn" id="mtaBtn">Check the local mail agent</button></div>
          <div class="note" id="mtaMsg" hidden></div></div>`;
+  drawUpdate(await api("update").catch(() => null), st);
   $("#mtaBtn").addEventListener("click", async () => {
     const b = $("#mtaBtn"), m = $("#mtaMsg");
     b.disabled = true; b.textContent = "Probing…";
@@ -562,6 +644,70 @@ async function viewStatus() {
         : "No local mail agent. Install Postfix (or any sendmail) and this app hands mail to it; the app itself never connects out to deliver.";
     } catch (e) { m.hidden = false; m.className = "note bad"; m.textContent = e.message; }
     finally { b.disabled = false; b.textContent = "Check the local mail agent"; }
+  });
+}
+
+// The Update card: what the last self-check found, a Check-now for admins, and
+// — when a newer build waits — the apply. The apply belongs to the dashboard
+// (it owns these files); from inside the dashboard the page can press it on
+// the app's behalf through the dashboard's own addons API.
+function drawUpdate(u, st) {
+  const el = $("#updBox");
+  if (!el) return;
+  const inDash = location.pathname.startsWith("/__gate/");
+  if (!u) { el.innerHTML = '<span class="faint small">The update state is unavailable right now.</span>'; return; }
+  const state = u.error
+    ? `<span class="dot bad"></span> <code>${h(u.error)}</code>`
+    : u.up_to_date === null
+      ? `<span class="dot warn"></span> <code>${h(u.note || "no source to watch")}</code>`
+      : u.up_to_date
+        ? '<span class="dot ok"></span> <code>up to date</code>'
+        : `<span class="dot bad"></span> <code>${h(u.remote?.version || "a newer build")} is out</code>${u.remote?.subject ? `<div class="faint small">${h(u.remote.subject)}</div>` : ""}`;
+  el.innerHTML = `
+    <dl class="kv">
+      <dt>Running</dt><dd>${h(u.local?.version || st?.version || "")}</dd>
+      <dt>Source</dt><dd>${state}</dd>
+      <dt>Last check</dt><dd>${u.checked ? ago(u.checked) : "never"} — it checks itself every 3 hours</dd>
+    </dl>
+    <div class="row mt">
+      ${isAdmin() ? '<button class="btn" id="updCheck">Check now</button>' : ""}
+      ${isAdmin() && u.up_to_date === false
+        ? (inDash
+            ? '<button class="btn primary" id="updGo">Update now</button><span class="faint small">the app restarts, then this page reloads</span>'
+            : `<span class="faint small">Apply it from the dashboard's Add-ons page${u.dashboard ? ` — <a href="${h(u.dashboard)}" target="_top">open the dashboard</a>` : ""}.</span>`)
+        : ""}
+    </div>`;
+  const c = $("#updCheck");
+  if (c) c.addEventListener("click", async () => {
+    c.disabled = true; c.textContent = "Checking…";
+    try { drawUpdate(await api("update/check", { method: "POST" }), st); }
+    catch (e) { toast(e.message); c.disabled = false; c.textContent = "Check now"; }
+  });
+  const g = $("#updGo");
+  if (g) g.addEventListener("click", async () => {
+    g.disabled = true; g.textContent = "Updating…";
+    try {
+      // the dashboard takes its own mutating calls only from its own pages:
+      // same-origin (this page is served by it) plus its X-Gate header
+      const r = await fetch("/__gate/api/addons/selfmail/update", { method: "POST", headers: { "Content-Type": "application/json", "X-Gate": "1" }, body: "{}" });
+      if (!r.ok) throw new Error(`the dashboard answered ${r.status}`);
+      const j = await r.json();
+      toast("Updating — this page reloads when it's done.");
+      const id = j.job?.id;
+      (async function poll(tries) {
+        if (tries > 120) { location.reload(); return; }
+        try {
+          const p = await fetch(`/__gate/api/addons/jobs/${id}`);
+          const pj = await p.json();
+          if (pj.state === "running") return setTimeout(() => poll(tries + 1), 2000);
+          if (pj.state === "done") return setTimeout(() => location.reload(), 1500);
+          throw new Error(pj.error || pj.state || "the update job failed");
+        } catch (e) {
+          if (String(e.message).startsWith("the dashboard answered")) throw e;
+          setTimeout(() => poll(tries + 1), 3000);   // the app itself may be mid-restart
+        }
+      })(0);
+    } catch (e) { g.disabled = false; g.textContent = "Update now"; toast(e.message); }
   });
 }
 VIEWS.status = viewStatus;
@@ -641,10 +787,14 @@ async function viewService() {
   const inv = d.system.invalid;
   app.innerHTML = head("Service accounts", "The machine's own accounts: no password, admins open them, presets answer for them.")
     + `<div class="row" style="margin-bottom:14px"><button class="btn primary" id="addSvc">Add service account</button></div>
-       <div class="scroll" style="margin-bottom:14px"><table><thead><tr><th>Account</th><th>Auto-reply</th><th>Mail</th><th></th></tr></thead><tbody>
+       <div class="scroll" style="margin-bottom:14px"><table><thead><tr><th>Account</th><th>Auto-reply</th><th>Hands mail to</th><th>Mail</th><th></th></tr></thead><tbody>
        ${d.users.filter((u) => u.role === "service").map((u) => `<tr>
          <td><b>${h(u.name || u.username)}</b><div class="faint small mono">${h(u.address || u.username + "@" + (d.domain || "…"))}</div></td>
          <td>${u.autoReply.enabled ? '<span class="pill ok">on</span>' : '<span class="pill">off</span>'}</td>
+         <td><div class="selpick"><select class="input" style="width:auto" data-fwd="${h(u.username)}">
+           <option value="">its own inbox</option>
+           ${d.users.filter((x) => x.role !== "service").map((x) => `<option value="${h(x.username)}" ${u.forwardTo === x.username ? "selected" : ""}>${h(x.username)}</option>`).join("")}
+         </select></div></td>
          <td class="mono">${u.counts.inbox}/${u.counts.sent}</td>
          <td><div class="tbl-actions">
            <button class="btn sm" data-open="${h(u.username)}">Open</button>
@@ -652,6 +802,7 @@ async function viewService() {
            <button class="btn sm ghost danger" data-del="${h(u.username)}">Delete</button>
          </div></td></tr>`).join("")}
        </tbody></table></div>
+       <div class="faint small" style="margin:-6px 0 14px">Contacting a service account: the mail files into its inbox, and when it hands mail to someone, a copy lands with them too.</div>
        <div class="card"><h3>When an address is nobody's <span class="faint">— mail for a name no account has</span></h3>
          <div class="field"><span>What happens</span><div class="selpick"><select class="input" id="invMode" style="width:100%">
            <option value="off" ${inv.mode === "off" ? "selected" : ""}>drop it quietly</option>
@@ -666,7 +817,8 @@ async function viewService() {
            ${d.users.map((u) => `<option value="${h(u.username)}" ${inv.catch === u.username ? "selected" : ""}>${h(u.username)}</option>`).join("")}
          </select></div></div>
          <div class="field"><span>Subject — <span class="mono">{address}</span>, <span class="mono">{domain}</span>, <span class="mono">{sender}</span></span><input class="input" id="invSubject" value="${h(inv.subject)}"></div>
-         <div class="field"><span>Text</span><textarea id="invText" style="min-height:120px">${h(inv.text)}</textarea></div>
+         ${editorField("invEd", { text: inv.text, html: inv.html })}
+         <div class="faint small" style="margin:-6px 0 10px">The same placeholders fill in on both sides; an HTML answer rides beside the text one.</div>
          <div class="switchrow"><div class="grow"><b>Keep a copy</b><span class="faint small">file the rejected mail into the answering account's inbox</span></div>
            <label class="switch"><input type="checkbox" id="invKeep" ${inv.keep ? "checked" : ""}><i></i></label></div>
          <div class="row"><button class="btn primary" id="invSave">Save</button></div>
@@ -691,12 +843,17 @@ async function viewService() {
     if (!confirm(`Delete ${b.dataset.del} and its mail?`)) return;
     try { await api(`admin/users/${b.dataset.del}?mail=drop`, { method: "DELETE" }); toast("Deleted."); viewService(); } catch (e) { toast(e.message); }
   });
+  wireEditor("invEd", inv);
+  for (const sel of app.querySelectorAll("[data-fwd]")) sel.addEventListener("change", async () => {
+    try { await api(`admin/users/${sel.dataset.fwd}`, { method: "PATCH", body: { forwardTo: sel.value } }); toast(`${sel.dataset.fwd} hands its mail to ${sel.value || "its own inbox"}.`); viewService(); }
+    catch (e) { toast(e.message); viewService(); }
+  });
   $("#invSave").addEventListener("click", async () => {
     const msg = $("#invMsg");
     try {
       await api("admin/system", { method: "PUT", body: { invalid: {
         mode: $("#invMode").value, account: $("#invAccount").value, catch: $("#invCatch").value,
-        subject: $("#invSubject").value, text: $("#invText").value, keep: $("#invKeep").checked,
+        subject: $("#invSubject").value, text: $("#invEdText").value, html: $("#invEdHtml").innerHTML, keep: $("#invKeep").checked,
       } } });
       msg.hidden = false; msg.className = "note ok"; msg.textContent = "Saved.";
     } catch (e) { msg.hidden = false; msg.className = "note bad"; msg.textContent = e.message; }

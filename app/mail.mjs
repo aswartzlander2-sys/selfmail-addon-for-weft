@@ -53,6 +53,7 @@ export function appConfig(dataDir) {
     webhookWanted: String(conf.webhook ?? "1") !== "0" && conf.webhook !== false,
     inboundSecret: String(conf.inbound_secret || "").trim(),
     tunnel: state.tunnel || null,
+    publishError: String(state.error || ""),
     zoneLinked: !!state.zone,
     // every domain this machine has: what the extension keeps fresh in
     // state.json, plus what the install script seeded into config.json
@@ -69,7 +70,7 @@ export function appConfig(dataDir) {
 // mailbox is small: this is personal mail, not an archive.
 export const USERNAME_RE = /^[a-z0-9][a-z0-9._-]{0,31}$/;
 export const ROLES = ["admin", "user", "service"];
-export const defaultAutoReply = () => ({ enabled: false, subject: "Re: {subject}", text: "", cooldown: 60 });
+export const defaultAutoReply = () => ({ enabled: false, subject: "Re: {subject}", text: "", html: "", cooldown: 60 });
 export const defaultSystem = () => ({
   invalid: {
     mode: "off",                       // off | reply | catch: what happens to mail for an address no account has
@@ -77,6 +78,7 @@ export const defaultSystem = () => ({
     catch: "",                         // the account that receives it instead (mode "catch")
     subject: "Undeliverable: {address}",
     text: "The address {address} does not exist at {domain}.\n\nYour message was not delivered.",
+    html: "",                          // the same answer as HTML, when you want it styled
     keep: false,                       // keep a copy in the answering account's inbox
   },
   domains: {},                        // zone -> false: a domain the admin switched off (absent = served)
@@ -135,6 +137,7 @@ export class Store {
     if (patch.role !== undefined && ROLES.includes(patch.role)) u.role = patch.role;
     if (patch.password !== undefined) u.password = patch.password ? hashPassword(patch.password) : "";
     if (patch.autoReply !== undefined) u.autoReply = { ...defaultAutoReply(), ...u.autoReply, ...patch.autoReply };
+    if (patch.forwardTo !== undefined) u.forwardTo = patch.forwardTo;      // service accounts: hand a copy to a real account
     this.save();
     return u;
   }
@@ -198,7 +201,7 @@ export class Store {
   // ---- auto-reply bookkeeping (one reply per sender per cooldown)
   shouldAutoReply(user, sender) {
     const a = user.autoReply || defaultAutoReply();
-    if (!a.enabled || !a.text) return false;
+    if (!a.enabled || (!a.text && !a.html)) return false;
     const s = String(sender || "").toLowerCase();
     const last = (user.autoLog || {})[s] || 0;
     return Date.now() - last >= Math.max(0, Number(a.cooldown) || 0) * 60e3;
@@ -246,7 +249,7 @@ export function verifyToken(token, secret) {
   } catch { return null; }
 }
 // the public view of an account (never the hash, never the auto-reply log)
-export const userView = (u) => u && ({ username: u.username, name: u.name, role: u.role, service: u.role === "service", autoReply: { ...defaultAutoReply(), ...u.autoReply }, created: u.created, messages: 0 }) || null;
+export const userView = (u) => u && ({ username: u.username, name: u.name, role: u.role, service: u.role === "service", autoReply: { ...defaultAutoReply(), ...u.autoReply }, forwardTo: u.forwardTo || "", created: u.created, messages: 0 }) || null;
 
 export const newId = () => "m" + randomBytes(9).toString("hex");
 

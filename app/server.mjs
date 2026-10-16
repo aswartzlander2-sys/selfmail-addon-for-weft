@@ -40,11 +40,12 @@
 // While it runs it keeps this addon's entry on the Weft mesh fresh.
 
 import { createServer } from "node:http";
+import { execFile } from "node:child_process";
 import { readFileSync, existsSync, mkdirSync, writeFileSync, renameSync, rmSync } from "node:fs";
 import { join, dirname, extname } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
-  appConfig, Store, newId, snippet, splitAddresses, goodAddress, USERNAME_RE,
+  appConfig, Store, newId, snippet, splitAddresses, goodAddress, USERNAME_RE, loadJson,
   messageFromRaw, messageFromJson, buildMime, sendViaLocalMta, mtaCheck,
   dnsRecords, checkDns, publicIp, hashPassword, verifyPassword, signToken, verifyToken, keyHash,
   userView, defaultAutoReply, defaultSystem,
@@ -57,6 +58,54 @@ const cfg = appConfig(DATA);
 const store = new Store(DATA);
 const started = Date.now();
 const NAME = "Selfmail";
+
+// ------------------------------------------------------------------ self-update
+// The addon came from a git source (the dashboard's Add-ons page knows it), so
+// the app can watch that source itself: every 3 hours it asks git whether the
+// source moved and remembers what it found; the Status page shows it. The
+// apply stays with the dashboard, which owns these files — from inside the
+// dashboard the page can press it on the app's behalf via the dashboard's own
+// addons API.
+const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
+const UPDATE_FILE = join(DATA, "update.json");
+const gitAt = (args) => new Promise((resolve) => {
+  execFile("git", args, { cwd: ROOT, timeout: 120000 }, (e, out, err) =>
+    resolve(e ? { ok: false, err: String(e.message || err || e).split("\n").filter(Boolean).pop() || "git failed" } : { ok: true, out: String(out) }));
+});
+async function updateCheck() {
+  const res = { checked: Date.now(), up_to_date: null, local: { commit: "", version: cfg.version }, remote: null, note: "", error: "" };
+  const save = () => { try { writeFileSync(UPDATE_FILE, JSON.stringify(res, null, 2)); } catch { /* a read-only moment: the page just shows the last one */ } };
+  if (!existsSync(join(ROOT, ".git"))) {
+    res.note = "Not a git checkout — there is no source to watch. The dashboard's Update applies whatever files it was given.";
+    save(); return res;
+  }
+  const head = await gitAt(["rev-parse", "HEAD"]);
+  if (!head.ok) { res.error = head.err; save(); return res; }
+  res.local.commit = head.out.trim();
+  const fetch = await gitAt(["fetch", "--quiet", "origin"]);
+  if (!fetch.ok) { res.error = `Could not reach the source: ${fetch.err}`; save(); return res; }
+  const remote = await gitAt(["rev-parse", "FETCH_HEAD"]);
+  if (!remote.ok) { res.error = remote.err; save(); return res; }
+  const rc = remote.out.trim();
+  res.remote = { commit: rc, version: "", subject: "" };
+  if (rc === res.local.commit) {
+    res.up_to_date = true;
+    res.note = "The source hasn't moved.";
+  } else {
+    res.up_to_date = false;
+    const mf = await gitAt(["show", `${rc}:forge-addon.json`]);
+    try { res.remote.version = String(JSON.parse(mf.out).version || ""); } catch { /* the remote manifest isn't readable from here */ }
+    const sub = await gitAt(["log", "-1", "--format=%s", rc]);
+    if (sub.ok) res.remote.subject = sub.out.trim();
+  }
+  save(); return res;
+}
+const updateView = () => ({
+  ...(loadJson(UPDATE_FILE, { checked: 0, up_to_date: null, local: { commit: "", version: cfg.version }, remote: null, note: "Not checked yet.", error: "" })),
+  dashboard: appConfig(DATA).hostUrl,
+});
+setTimeout(() => updateCheck().catch((e) => console.error("update check:", e.message)), 20 * 1000).unref();
+setInterval(() => updateCheck().catch((e) => console.error("update check:", e.message)), 3 * 3600 * 1000).unref();
 
 if (!cfg.port) { console.error("selfmail: no port in", CONF); process.exit(1); }
 
@@ -154,6 +203,7 @@ async function stateView() {
     zoneLinked: fresh.zoneLinked, webhookWanted: fresh.webhookWanted,
     inbound: inboundUrl(),
     tunnel: fresh.tunnel,
+    publishError: fresh.publishError || "",
     counts: store.counts(),
   };
 }
@@ -250,12 +300,12 @@ async function doSend(body, fromDraft, account, { auto = false } = {}) {
 // One message arrives for the domain: route it to the accounts it names, let
 // each preset response answer, and let the subsystem answer for addresses
 // that are nobody's — all exactly as the admin set it up.
-// every To/Cc address on a domain this mailbox serves: its local part, and the
-// domain it came in on (the preset answers {domain} with that one)
-const routesAt = (msg) => {
+// every address on a domain this mailbox serves: its local part, and the domain
+// it came in on (the preset answers {domain} with that one)
+const routesOf = (addresses) => {
   const enabled = enabledDomains();
   const out = [];
-  for (const addr of [...splitAddresses(msg.to), ...splitAddresses(msg.cc)]) {
+  for (const addr of addresses) {
     const a = String(addr).replace(/^<|>$/g, "").toLowerCase();
     const at = a.lastIndexOf("@");
     const d = at > 0 ? a.slice(at + 1) : "";
@@ -263,7 +313,16 @@ const routesAt = (msg) => {
   }
   return out;
 };
+const routesAt = (msg) => routesOf([...splitAddresses(msg.to), ...splitAddresses(msg.cc)]);
 const looksAuto = (raw) => /(^|\n)(Auto-Submitted:\s*auto|X-Selfmail-Auto:\s*1)/i.test(String(raw || ""));
+// most real mail arrives as 'Name <addr@host>': the bare address is what every
+// guard and every reply target wants, or display names would silence the
+// machine's answers entirely
+const bareAddr = (s) => {
+  const t = String(s || "");
+  const m = /<\s*([^<>]+?)\s*>/.exec(t);          // 'Name <addr@host>' -> addr@host
+  return (m ? m[1] : String(splitAddresses(t)[0] || "")).trim();
+};
 
 // A small machine can be buried by answering a spam wave (a dictionary attack on
 // one of the domains fills the mail agent's queue with retries). The machine
@@ -279,24 +338,25 @@ const autoSpend = () => { autoSpent.push(Date.now()); };
 
 async function autoAnswer(msg, account, domain) {
   const a = { ...defaultAutoReply(), ...account.autoReply };
-  if (!a.enabled || !a.text) return null;
-  if (!msg.from || !goodAddress(msg.from)) return null;
+  if (!a.enabled || (!a.text && !a.html)) return null;
+  const back = bareAddr(msg.from);
+  if (!back || !goodAddress(back)) return null;
   if (enabledDomains().some((d) => String(msg.from).toLowerCase().endsWith("@" + d))) return null;  // never answer ourselves
   if (msg.robot) return null;                                                                   // nor robots
-  if (!store.shouldAutoReply(account, msg.from)) return null;                                   // nor twice in one cooldown
+  if (!store.shouldAutoReply(account, back)) return null;                                       // nor twice in one cooldown
   if (autoBudget().left <= 0) { console.log("auto-reply: hourly cap reached, not answered"); return null; }  // nor a spam wave
   const fill = (s) => String(s || "")
     .replaceAll("{subject}", msg.subject || "(no subject)")
     .replaceAll("{sender}", msg.from)
     .replaceAll("{address}", msg.from)
     .replaceAll("{domain}", domain || primaryDomain());
-  store.markAutoReplied(account, msg.from);
+  store.markAutoReplied(account, back);
   autoSpend();
-  const r = await doSend({ to: msg.from, subject: fill(a.subject), text: fill(a.text), inReplyTo: msg.messageId || "" }, null, account, { auto: true });
+  const r = await doSend({ to: back, subject: fill(a.subject), text: fill(a.text), html: fill(a.html), inReplyTo: msg.messageId || "" }, null, account, { auto: true });
   return r.status === 200 ? r.json : null;
 }
 
-async function handleInbound(raw) {
+async function handleInbound(raw, envelope = null) {
   const fresh = appConfig(DATA);
   let msg;
   if (raw.charAt(0) === "{") {
@@ -305,31 +365,40 @@ async function handleInbound(raw) {
   if (!msg) msg = messageFromRaw(raw, fresh.address || "you@your-domain");
   msg.robot = looksAuto(raw);
   const delivered = [];
-  const routes = routesAt(msg);
+  const routes = envelope?.length ? routesOf(envelope) : routesAt(msg);
   const accounts = [];
   for (const r of routes) {
     const u = store.user(r.local);
     if (u && !accounts.some((a) => a.user === u)) accounts.push({ user: u, domain: r.domain });
   }
   if (accounts.length) {
+    const forwarded = [];
     for (const { user: account, domain } of accounts) {
       store.add({ ...msg, owner: account.username });
       delivered.push(account.username);
+      // a service account can hand its mail on: a copy lands with a real
+      // account too, so someone actually reads it (never another service
+      // account — no chains)
+      if (account.role === "service" && account.forwardTo) {
+        const fwd = store.user(account.forwardTo);
+        if (fwd && fwd.role !== "service") { store.add({ ...msg, owner: fwd.username }); forwarded.push(fwd.username); }
+      }
       const reply = await autoAnswer(msg, account, domain);        // the preset response, if one is on
       if (reply) console.log(`auto-reply: ${account.username} -> ${msg.from}`);
     }
-    return { delivered };
+    return { delivered, forwarded };
   }
   // one of our domains, but no account has the address: the admin's call
   if (routes.length) {
     const inv = store.data.system.invalid;
-    const sender = msg.from && goodAddress(msg.from) ? msg.from : "";
+    const bare = bareAddr(msg.from);
+    const sender = bare && goodAddress(bare) ? bare : "";
     const localSender = enabledDomains().some((d) => sender.toLowerCase().endsWith("@" + d));
     if (inv.mode === "catch" && inv.catch && store.user(inv.catch)) {
       store.add({ ...msg, owner: inv.catch });
       return { delivered: [inv.catch] };
     }
-    if (inv.mode === "reply" && inv.account && store.user(inv.account) && sender && !localSender && !msg.robot) {
+    if (inv.mode === "reply" && (inv.text || inv.html) && inv.account && store.user(inv.account) && sender && !localSender && !msg.robot) {
       const account = store.user(inv.account);
       const fill = (s) => String(s || "")
         .replaceAll("{address}", routes.map((r) => r.local + "@" + r.domain).join(", "))
@@ -339,7 +408,7 @@ async function handleInbound(raw) {
       if (autoBudget().left <= 0) { console.log("invalid: hourly cap reached, not answered (a copy is kept)"); }
       else {
         autoSpend();
-        const r = await doSend({ to: sender, subject: fill(inv.subject), text: fill(inv.text) }, null, account, { auto: true });
+        const r = await doSend({ to: sender, subject: fill(inv.subject), text: fill(inv.text), html: fill(inv.html) }, null, account, { auto: true });
         if (r.status === 200) {
           console.log(`invalid: ${routes.map((x) => x.local + "@" + x.domain).join(", ")} -> told ${sender}`);
           return { delivered: [], answered: account.username };
@@ -369,9 +438,25 @@ const server = createServer(async (req, res) => {
       if (!m || decodeURIComponent(m[1]) !== secret) return send(res, 403, { error: "forbidden" });
       if (m[2]) return send(res, 200, { ok: true, ready: true, app: "selfmail" });
       if (req.method !== "POST") return send(res, 405, { error: "POST the message here." });
-      const raw = (await readBody(req, 30 * 1024 * 1024)).toString("utf8");
-      if (!raw.trim()) return send(res, 400, { error: "empty body" });
-      const r = await handleInbound(raw);
+      const rawBody = (await readBody(req, 30 * 1024 * 1024)).toString("utf8");
+      if (!rawBody.trim()) return send(res, 400, { error: "empty body" });
+      // Two shapes arrive here. A local mail agent pipes the bare message.
+      // The default relay (forwardemail.net) POSTs a JSON envelope: the whole
+      // original message in "raw", and the true envelope recipients under
+      // "recipients" — the envelope beats any header, and Bcc never shows in
+      // headers at all. Both are taken, so both roads lead in.
+      let raw = rawBody, envelope = null;
+      if (String(req.headers["content-type"] || "").includes("json") || rawBody.charAt(0) === "{") {
+        try {
+          const p = JSON.parse(rawBody);
+          if (p && typeof p.raw === "string" && p.raw.trim()) {
+            raw = p.raw;
+            const list = Array.isArray(p.recipients) ? p.recipients : (p.session?.recipient ? [p.session.recipient] : []);
+            envelope = list.map((x) => String((typeof x === "object" && x) ? x.address || "" : x || "")).filter(Boolean);
+          }
+        } catch { /* not a JSON envelope after all: the bytes are the message */ }
+      }
+      const r = await handleInbound(raw, envelope);
       console.log(`inbound: from the relay -> ${r.delivered?.join(", ") || "nobody"}${r.answered ? ` (answered by ${r.answered})` : ""}`);
       return send(res, 200, { ok: true, ...r, bytes: raw.length });
     }
@@ -449,6 +534,7 @@ const server = createServer(async (req, res) => {
         const f = await body();
         store.setUser(g.user.username, { autoReply: {
           enabled: !!f.enabled, subject: String(f.subject || "").slice(0, 200), text: String(f.text || "").slice(0, 32 * 1024),
+          html: String(f.html || "").slice(0, 128 * 1024),
           cooldown: Math.max(0, Math.min(1440, Number(f.cooldown) || 0)),
         } });
         return send(res, 200, { ok: true, autoReply: { ...defaultAutoReply(), ...store.user(g.user.username).autoReply } });
@@ -458,7 +544,7 @@ const server = createServer(async (req, res) => {
         const f = await body();
         if (!goodAddress(String(f.to || ""))) return send(res, 400, { error: "Give an address to send the test to." });
         const a = { ...defaultAutoReply(), ...g.user.autoReply };
-        const r = await doSend({ to: f.to, subject: a.subject || "Auto-reply test", text: a.text || "(empty)" }, null, g.user, { auto: true });
+        const r = await doSend({ to: f.to, subject: a.subject || "Auto-reply test", text: a.text || "(empty)", html: a.html || "" }, null, g.user, { auto: true });
         return send(res, r.status, r.json);
       }
 
@@ -550,10 +636,31 @@ const server = createServer(async (req, res) => {
         const g = gate(); if (g.deny) return send(res, g.deny.status, g.deny.json);
         const ip = await publicIp();
         const d = dnsDomain();
-        const records = dnsRecords({ domain: d, webhookUrl: inboundUrl(), publicIp: ip, mailbox: appConfig(DATA).mailbox });
+        const inUrl = inboundUrl();
+        const records = dnsRecords({ domain: d, webhookUrl: inUrl, publicIp: ip, mailbox: appConfig(DATA).mailbox });
         const rows = await checkDns(records);
+        // A hook record holding the placeholder can never be "in place": the
+        // placeholder matches itself green, and the relay would be POSTing at
+        // a URL that was never real. No inbound address, no green.
+        for (const r of rows) if (r.key === "hook" && !inUrl) {
+          r.ok = false;
+          r.detail = "The inbound address isn't published yet, so this row cannot honestly go green — the relay would have nowhere to deliver.";
+        }
+        // Prove the whole way in, not just the records: ask the inbound address
+        // itself, across the internet, whether it answers.
+        const probe = { ok: false, url: inUrl, detail: "" };
+        if (!inUrl) probe.detail = "no inbound address: the host hasn't published the tunnel";
+        else {
+          try {
+            const t0 = Date.now();
+            const pr = await fetch(inUrl.replace(/\/$/, "") + "/ping", { signal: AbortSignal.timeout(9000), headers: { "user-agent": "selfmail/1 (asking its own inbound address)" } });
+            probe.ok = pr.ok;
+            if (!pr.ok) probe.detail = `the tunnel answered HTTP ${pr.status}`;
+            else probe.ms = Date.now() - t0;
+          } catch (e) { probe.detail = `it doesn't answer from outside (${e.name === "TimeoutError" || e.name === "AbortError" ? "timed out" : e.message})`; }
+        }
         const ok = rows.filter((r) => r.ok).length;
-        return send(res, 200, { domain: d, records: rows, ok, total: rows.length, allGood: ok === rows.length });
+        return send(res, 200, { domain: d, records: rows, ok, total: rows.length, inbound: probe, allGood: ok === rows.length && probe.ok });
       }
       if (path === "/api/mta" && req.method === "GET") {
         const g = gate(); if (g.deny) return send(res, g.deny.status, g.deny.json);
@@ -562,6 +669,14 @@ const server = createServer(async (req, res) => {
       if (path === "/api/domains" && req.method === "GET") {
         const g = gate(); if (g.deny) return send(res, g.deny.status, g.deny.json);
         return send(res, 200, domainView());
+      }
+      if (path === "/api/update" && req.method === "GET") {
+        const g = gate(); if (g.deny) return send(res, g.deny.status, g.deny.json);
+        return send(res, 200, updateView());
+      }
+      if (path === "/api/update/check" && req.method === "POST") {
+        const g = gate(u, true); if (g.deny) return send(res, g.deny.status, g.deny.json);
+        return send(res, 200, await updateCheck());
       }
 
       // ---- admin: accounts, keys, and what the subsystem does
@@ -594,7 +709,14 @@ const server = createServer(async (req, res) => {
         const admins = store.accounts({ service: false }).filter((x) => x.role === "admin");
         if (f.role && f.role !== user.role && user.role === "admin" && admins.length <= 1) return send(res, 409, { error: "The last admin stays an admin." });
         if (f.password !== undefined && user.role !== "service" && String(f.password).length < 8) return send(res, 400, { error: "Use at least 8 characters." });
-        store.setUser(user.username, { name: f.name, role: f.role, password: f.password === undefined ? undefined : (f.password || ""), autoReply: f.autoReply });
+        let forwardTo;
+        if (f.forwardTo !== undefined) {
+          forwardTo = String(f.forwardTo || "").trim().toLowerCase();
+          if (forwardTo && user.role !== "service") return send(res, 400, { error: "Only a service account can hand its mail on." });
+          const t = forwardTo ? store.user(forwardTo) : null;
+          if (forwardTo && (!t || t.role === "service")) return send(res, 400, { error: "Hand it to a real account, not another service one." });
+        }
+        store.setUser(user.username, { name: f.name, role: f.role, password: f.password === undefined ? undefined : (f.password || ""), autoReply: f.autoReply, forwardTo });
         return send(res, 200, { user: { ...userView(store.user(user.username)), address: addressOf(user.username) } });
       }
       if (adminUser && req.method === "DELETE") {
@@ -647,6 +769,7 @@ const server = createServer(async (req, res) => {
           account: store.user(inv.account) ? inv.account : cur.invalid.account,
           catch: store.user(inv.catch) ? inv.catch : (inv.catch === "" ? "" : cur.invalid.catch),
           subject: String(inv.subject || "").slice(0, 200), text: String(inv.text || "").slice(0, 32 * 1024),
+          html: String(inv.html || "").slice(0, 128 * 1024),
           keep: !!inv.keep,
         };
         store.save();
