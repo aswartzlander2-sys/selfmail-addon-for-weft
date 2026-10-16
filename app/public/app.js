@@ -11,6 +11,21 @@ if (location.pathname.startsWith("/__gate/") && !location.pathname.endsWith("/")
 const UNDER_GATE = location.pathname.startsWith("/__gate/");
 if (UNDER_GATE) { const b = document.getElementById("backHost"); if (b) b.hidden = false; }
 
+// If the stylesheet never arrives (a broken update can lose app.css), the page
+// still works but looks like a wreck. Say so plainly at the top instead.
+const cssOk = () => !!getComputedStyle(document.documentElement).getPropertyValue("--bg").trim();
+if (!cssOk()) {
+  const warnNoCss = () => {
+    if (cssOk()) return;
+    const b = document.createElement("div");
+    b.textContent = "Selfmail's stylesheet didn't load, so everything works but the page won't look right. Updating or reinstalling the addon brings it back (app.css is missing or not being served on this machine).";
+    b.style.cssText = "position:fixed;top:0;left:0;right:0;z-index:9999;background:#20050a;color:#ffd9df;font:13px/1.5 system-ui,sans-serif;padding:10px 14px;border-bottom:1px solid #f4587a";
+    document.body.appendChild(b);
+  };
+  if (document.readyState === "complete") warnNoCss();
+  else addEventListener("load", warnNoCss, { once: true });
+}
+
 const $ = (s, el = document) => el.querySelector(s);
 const app = $("#app");
 const h = (v) => String(v ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));

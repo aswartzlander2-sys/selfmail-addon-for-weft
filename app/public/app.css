@@ -13,6 +13,9 @@
   color-scheme: dark;
 }
 * { box-sizing: border-box; }
+/* Author display rules beat the UA's [hidden] handling, so say it loud:
+   a hidden element stays hidden even when a rule gives it a display. */
+[hidden] { display: none !important; }
 html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text); font: 13.5px/1.5 var(--sans); -webkit-font-smoothing: antialiased; }
 body { background: radial-gradient(1200px 600px at 85% -10%, rgba(139,124,246,.08), transparent 60%), radial-gradient(900px 500px at -10% 110%, rgba(34,184,238,.05), transparent 60%), var(--bg); }
 a { color: inherit; }
