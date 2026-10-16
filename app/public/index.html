@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Selfmail</title>
+<link rel="icon" href="logo.svg" type="image/svg+xml">
+<link rel="stylesheet" href="app.css?v=1.2.0">
+</head>
+<body>
+<div class="shell" id="shell" hidden>
+  <aside class="rail" aria-label="Selfmail">
+    <a class="brand" href="#/"><img src="logo.svg" alt=""><span>Selfmail</span></a>
+    <a class="backhost" id="backHost" href="/" hidden title="Back to your Aegis dashboard"><i data-i="back"></i><span>Aegis dashboard</span></a>
+    <nav id="nav">
+      <a href="#/inbox" data-v="inbox"><i data-i="inbox"></i><span>Inbox</span><b class="count" id="cInbox"></b></a>
+      <a href="#/drafts" data-v="drafts"><i data-i="draft"></i><span>Drafts</span><b class="count" id="cDrafts"></b></a>
+      <a href="#/sent" data-v="sent"><i data-i="send"></i><span>Sent</span></a>
+      <a href="#/trash" data-v="trash"><i data-i="trash"></i><span>Trash</span></a>
+      <a href="#/compose" data-v="compose"><i data-i="pencil"></i><span>Compose</span></a>
+      <a href="#/auto" data-v="auto"><i data-i="reply"></i><span>Auto-reply</span></a>
+      <a href="#/dns" data-v="dns"><i data-i="dns"></i><span>DNS</span></a>
+      <a href="#/status" data-v="status"><i data-i="gear"></i><span>Status</span></a>
+      <a href="#/account" data-v="account"><i data-i="user"></i><span>Account</span></a>
+      <div class="navgap" data-role="admin" hidden></div>
+      <a href="#/users" data-v="users" data-role="admin" hidden><i data-i="users"></i><span>Users</span></a>
+      <a href="#/service" data-v="service" data-role="admin" hidden><i data-i="server"></i><span>Service accounts</span></a>
+      <a href="#/keys" data-v="keys" data-role="admin" hidden><i data-i="key"></i><span>API keys</span></a>
+      <a href="#/system" data-v="system" data-role="admin" hidden><i data-i="sliders"></i><span>System</span></a>
+    </nav>
+    <div class="rail-foot" id="railFoot"></div>
+  </aside>
+  <main id="app" tabindex="-1"></main>
+</div>
+<div id="loginHost"></div>
+<aside class="drawer" id="drawer" aria-hidden="true"><div class="drawer-in" id="drawerIn"></div></aside>
+<div class="pop" id="pop" hidden><div class="pop-card" id="popCard"></div></div>
+<div class="toast" id="toast" role="status"></div>
+<script type="module" src="app.js?v=1.2.0"></script>
+</body>
+</html>

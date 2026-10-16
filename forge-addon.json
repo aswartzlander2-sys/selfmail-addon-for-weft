@@ -1,0 +1,120 @@
+{
+  "spec": 1,
+  "id": "selfmail",
+  "name": "Selfmail",
+  "version": "1.2.0",
+  "description": "Your own mail on your own domain, as a page of your Aegis × Burrow dashboard. Accounts with passwords and roles, service accounts the machine answers for, API keys for other programs, preset responses, and invalid-address handling — HTML or plain text, sent through the machine's own mail agent, received through the default relay on every domain the machine has. Everything is kept in the addon's data folder.",
+  "license": "MIT",
+  "homepage": "https://github.com/alexd-aero/selfmail",
+  "logo": "logo.svg",
+  "update_card": {
+    "theme": "orange",
+    "icon": "lock",
+    "style": "glow",
+    "title": "{name} {version}",
+    "tagline": "Accounts, keys and preset answers: the mailbox grows up.",
+    "highlights": [
+      "Accounts with passwords and roles (admin, user) — sign in by picking one from the dropdown",
+      "Service accounts (like the subsystem) only admins can open, and what they say for invalid addresses",
+      "API keys (read / send / admin) so another program can use one account's mail",
+      "Write in HTML or plain text; replies thread and forwarding is one click",
+      "Preset auto-replies, and mail served on every domain the machine has (switch any off)"
+    ],
+    "button": "Update to {version}"
+  },
+  "platforms": [
+    "burrow"
+  ],
+  "requires": {
+    "burrow": ">=2.15.0",
+    "os": [
+      "linux"
+    ],
+    "commands": [
+      "node",
+      "python3",
+      "curl"
+    ]
+  },
+  "scripts": {
+    "detect": "weft/detect.sh",
+    "install": "weft/install.sh",
+    "update": "weft/install.sh",
+    "uninstall": "weft/uninstall.sh",
+    "status": "weft/status.sh"
+  },
+  "actions": [
+    {
+      "id": "restart",
+      "label": "Restart",
+      "script": "weft/restart.sh"
+    }
+  ],
+  "settings": [
+    {
+      "key": "PORT",
+      "label": "Port",
+      "type": "number",
+      "default": 8796,
+      "min": 1024,
+      "max": 65535,
+      "help": "Where the mail app listens, on the same address as its host. The dashboard's page reaches it there."
+    },
+    {
+      "key": "MAILBOX",
+      "label": "Mailbox name",
+      "type": "text",
+      "default": "me",
+      "help": "The name of the mailbox before any account exists; the first account (created on first run) takes over."
+    },
+    {
+      "key": "FROM_NAME",
+      "label": "Sender name",
+      "type": "text",
+      "default": "",
+      "help": "The name on the mail you send, e.g. \"Ada Lovelace\". Leave it empty for just the address."
+    },
+    {
+      "key": "MAIL_DOMAIN",
+      "label": "Mail domain",
+      "type": "text",
+      "default": "",
+      "help": "The right-hand side of your address. Empty means the domain linked in Aegis × Burrow (Settings → Domain), which is what you usually want."
+    },
+    {
+      "key": "SUBDOMAIN",
+      "label": "Inbound subdomain",
+      "type": "text",
+      "default": "mail",
+      "help": "The public name for receiving mail, e.g. mail.your-domain. A relay delivers to it. Only used when a domain is linked."
+    },
+    {
+      "key": "WEBHOOK",
+      "label": "Publish the inbound address",
+      "type": "bool",
+      "default": true,
+      "help": "Burrow publishes a public HTTPS address that a mail relay posts your incoming mail to. Turn it off to keep everything local."
+    },
+    {
+      "key": "INBOUND_SECRET",
+      "label": "Inbound secret",
+      "type": "password",
+      "default": "",
+      "help": "The secret in the inbound URL a relay must know. Leave it empty and one is made for you, and kept in the data folder."
+    }
+  ],
+  "burrow": {
+    "extension": "burrow/extension.mjs",
+    "ui": "burrow/ui.js"
+  },
+  "links": [
+    {
+      "label": "The app it wraps",
+      "url": "https://github.com/alexd-aero/selfmail"
+    },
+    {
+      "label": "How it works",
+      "url": "https://github.com/alexd-aero/selfmail#readme"
+    }
+  ]
+}
