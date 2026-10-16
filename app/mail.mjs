@@ -54,7 +54,12 @@ export function appConfig(dataDir) {
     inboundSecret: String(conf.inbound_secret || "").trim(),
     tunnel: state.tunnel || null,
     zoneLinked: !!state.zone,
-    domains: Array.isArray(state.domains) ? state.domains.map((d) => String(d || "").trim().toLowerCase()).filter(Boolean) : [],
+    // every domain this machine has: what the extension keeps fresh in
+    // state.json, plus what the install script seeded into config.json
+    domains: [...new Set([
+      ...(Array.isArray(state.domains) ? state.domains : []).map((d) => String(d || "").trim().toLowerCase()).filter(Boolean),
+      ...String(conf.mail_domains || "").split(",").map((d) => d.trim().toLowerCase()).filter(Boolean),
+    ])],
   };
 }
 

@@ -116,11 +116,11 @@ function inboundUrl() {
 // names no local account at our domain lands with them rather than being lost
 const primaryAccount = () => store.accounts({ service: false }).find((u) => u.role === "admin") || store.accounts({ service: false })[0] || null;
 
-// The machine's domains: the mail-domain setting first, then every domain the
-// host has linked (the extension lists them in state.json as it finds them).
-// All of them are served unless an admin switched one off — the switches live
-// in system.domains, and the mail-domain setting is always served (it is the
-// address the app was installed with).
+// The machine's domains: whatever the host has — the main one first, then
+// every extra domain linked (the extension lists them in state.json as it
+// finds them; the install seeds the same list into config.json). All of them
+// are served unless an admin switched one off; the first (the machine's main
+// domain) is always served.
 function allDomains() {
   const fresh = appConfig(DATA);
   const out = [];
@@ -631,7 +631,7 @@ const server = createServer(async (req, res) => {
         if (!allDomains().includes(zone)) return send(res, 404, { error: "Not one of this machine's domains." });
         const sys = store.data.system;
         sys.domains = { ...(sys.domains || {}) };
-        if (zone === primaryDomain()) return send(res, 400, { error: "The mail domain itself is always served — reinstall with another if you mean to change it." });
+        if (zone === primaryDomain()) return send(res, 400, { error: "The machine's main domain is always served." });
         if (f.on === false) sys.domains[zone] = false;
         else delete sys.domains[zone];
         store.save();

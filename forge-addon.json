@@ -75,13 +75,6 @@
       "help": "The name on the mail you send, e.g. \"Ada Lovelace\". Leave it empty for just the address."
     },
     {
-      "key": "MAIL_DOMAIN",
-      "label": "Mail domain",
-      "type": "text",
-      "default": "",
-      "help": "The right-hand side of your address. Empty means the domain linked in Aegis × Burrow (Settings → Domain), which is what you usually want."
-    },
-    {
       "key": "SUBDOMAIN",
       "label": "Inbound subdomain",
       "type": "text",

@@ -193,3 +193,6 @@ select.input { appearance: none; background-image: none; padding-right: 30px; }
 .htmled blockquote { margin: 6px 0; padding: 2px 12px; border-left: 3px solid var(--line-2); color: var(--muted); }
 .htmled h3 { margin: 10px 0 4px; font-size: 15px; }
 .htmled a { color: var(--accent); }
+
+/* ---- compose: the From line, its own row (never inside the head's <p>) ---- */
+.fromrow { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin: -8px 0 14px; color: var(--muted); font-size: 12.5px; }

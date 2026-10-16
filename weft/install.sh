@@ -45,6 +45,36 @@ fi
 echo "::progress 40 Writing the settings"
 conf_write "$port"
 echo "settings in $CONF"
+
+# No mail domain is asked for: the machine's own domains, straight off the
+# dashboard's control socket, go into the settings — every one of them is served
+if [ -n "$sock" ] && [ -S "$sock" ]; then
+  curl -sS --max-time 10 --unix-socket "$sock" -H "X-Burrow-Client: $ADDON_ID/${ADDON_VERSION:-1}" \
+    http://burrow/overview 2>/dev/null \
+    | python3 -c '
+import json, sys
+try:
+    o = json.load(sys.stdin)
+    zones = [(o.get("domain") or {}).get("zone")] + [d.get("zone") for d in o.get("domains") or []]
+    seen, out = set(), []
+    for z in zones:
+        z = (z or "").strip().lower()
+        if z and z not in seen:
+            seen.add(z); out.append(z)
+    print(",".join(out))
+except Exception:
+    pass' > "$DATA/.domains.tmp" 2>/dev/null || true
+  if [ -s "$DATA/.domains.tmp" ] && [ "$(head -c 200 "$DATA/.domains.tmp")" != "" ]; then
+    python3 - "$CONF" "$DATA/.domains.tmp" <<'PY'
+import json, sys
+cfg = json.load(open(sys.argv[1]))
+cfg["mail_domains"] = open(sys.argv[2]).read().strip()
+json.dump(cfg, open(sys.argv[1], "w"), indent=2)
+PY
+    echo "serving mail for: $(cat "$DATA/.domains.tmp")"
+  fi
+  rm -f "$DATA/.domains.tmp"
+fi
 echo "::progress 65 Starting it"
 node_service_install
 node_service_start

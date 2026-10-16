@@ -308,14 +308,18 @@ async function compose(prefill = {}) {
   S.editing = prefill.id || null;
   S.inReplyTo = prefill.inReplyTo || "";
   S.mode = prefill.html ? "html" : "text";
-  const who = S.as && S.as !== S.session.user.username ? S.as : (S.session.user.user?.username || S.session.user.username || "");
+  const who = S.as && S.as !== S.session.user?.username ? S.as : (S.session.user?.username || "");
+  S.editDomain = prefill.domain || "";
   const dv = await api("domains").catch(() => ({ enabled: [], primary: "" }));
   const pick = prefill.domain || dv.primary || dv.enabled[0] || "";
-  const fromPick = dv.enabled.length > 1
-    ? `From <div class="selpick" style="display:inline-flex"><select class="input" id="fDomain" style="width:auto;padding:2px 8px;font-size:12px">${dv.enabled.map((z) => `<option value="${h(z)}" ${z === pick ? "selected" : ""}>${h(who)}@${h(z)}</option>`).join("")}</select></div>, through this machine's own mail agent.`
-    : `From <span class="mono">${h(who ? who + "@" + (pick || "…") : "")}</span>, through this machine's own mail agent.`;
+  const fromRow = `<div class="fromrow">From ${
+    dv.enabled.length > 1
+      ? `<div class="selpick"><select class="input" id="fDomain" style="width:auto;padding:3px 26px 3px 8px;font-size:12px">${dv.enabled.map((z) => `<option value="${h(z)}" ${z === pick ? "selected" : ""}>${h(who)}@${h(z)}</option>`).join("")}</select></div>`
+      : `<span class="mono">${h(who ? who + "@" + (pick || "…") : "…")}</span>`
+  }<span class="faint">through this machine's own mail agent.</span></div>`;
   app.innerHTML = `
-    ${asBar()}${head(S.editing ? "Edit a draft" : "Write a message", fromPick)}
+    ${asBar()}${head(S.editing ? "Edit a draft" : "Write a message", "")}
+    ${fromRow}
     <div class="note bad" id="mtaWarn" hidden></div>
     <div class="card">
       <div class="field"><span>To (comma-separated)</span><input class="input" id="fTo" placeholder="ada@example.org" spellcheck="false" autocapitalize="none"></div>
@@ -381,7 +385,7 @@ async function compose(prefill = {}) {
 }
 const fields = () => ({
   to: $("#fTo").value.trim(), cc: $("#fCc").value.trim(), subject: $("#fSubject").value.trim(),
-  domain: $("#fDomain") ? $("#fDomain").value : (S.editing ? undefined : ""),
+  domain: $("#fDomain") ? $("#fDomain").value : (S.editing ? S.editDomain || "" : ""),
   ...(S.mode === "html"
     ? { text: $("#fHtml").innerText.trim(), html: $("#fHtml").innerHTML }
     : { text: $("#fText").value, html: "" }),
@@ -478,11 +482,11 @@ VIEWS.account = viewAccount;
 async function viewDns() {
   const st = await api("state").catch(() => ({}));
   const dv = await api("domains").catch(() => ({ enabled: [], all: [], primary: "" }));
-  const isAdmin = S.session?.user?.role === "admin";
+  const admin = isAdmin();
   const pick = S.dnsDomain && dv.enabled.includes(S.dnsDomain) ? S.dnsDomain : (dv.primary || dv.enabled[0] || "");
   app.innerHTML = head("DNS", "The records that bring mail in, ready-made: the default relay domains are filled in.")
     + (dv.enabled.length > 1 ? `<div class="row" style="margin-bottom:12px"><span class="faint small">Domain</span><div class="selpick"><select class="input" id="dnsPick" style="width:auto">${dv.enabled.map((z) => `<option value="${h(z)}" ${z === pick ? "selected" : ""}>${h(z)}</option>`).join("")}</select></div></div>` : "")
-    + (isAdmin && dv.all.length ? `<div class="card" style="margin-bottom:14px"><h3>Served domains <span class="faint">— mail for any of these lands here</span></h3>
+    + (admin && dv.all.length ? `<div class="card" style="margin-bottom:14px"><h3>Served domains <span class="faint">— mail for any of these lands here</span></h3>
         ${dv.all.map((z) => `<div class="switchrow"><div class="grow"><b class="mono">${h(z)}</b>${z === dv.primary ? ' <span class="pill">primary</span>' : ""}</div>
           <label class="switch"><input type="checkbox" data-dom="${h(z)}" ${dv.enabled.includes(z) ? "checked" : ""} ${z === dv.primary ? "disabled" : ""}><i></i></label></div>`).join("")}
       </div>` : "")
