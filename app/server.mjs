@@ -47,7 +47,7 @@ import { fileURLToPath } from "node:url";
 import {
   appConfig, Store, newId, snippet, splitAddresses, goodAddress, USERNAME_RE, loadJson,
   messageFromRaw, messageFromJson, buildMime, sendViaLocalMta, mtaCheck,
-  dnsRecords, checkDns, publicIp, hashPassword, verifyPassword, signToken, verifyToken, keyHash,
+  dnsRecords, checkDns, publicIp, homeLine, hashPassword, verifyPassword, signToken, verifyToken, keyHash,
   userView, defaultAutoReply, defaultSystem,
 } from "./mail.mjs";
 
@@ -653,7 +653,18 @@ const server = createServer(async (req, res) => {
         else {
           try {
             const t0 = Date.now();
-            const pr = await fetch(inUrl.replace(/\/$/, "") + "/ping", { signal: AbortSignal.timeout(9000), headers: { "user-agent": "selfmail/1 (asking its own inbound address)" } });
+            let pr = await fetch(inUrl.replace(/\/$/, "") + "/ping", { signal: AbortSignal.timeout(9000), headers: { "user-agent": "selfmail/1 (asking its own inbound address)" } });
+            // Aegis's shield challenges a first contact from an address it has
+            // not seen ("Checking your address first. Try again in a few
+            // seconds."): give it the few seconds it asks for, once, before
+            // believing the answer.
+            if (pr.status === 403) {
+              const body = await pr.text().catch(() => "");
+              if (/checking your address/i.test(body)) {
+                await new Promise((r) => setTimeout(r, 3500));
+                pr = await fetch(inUrl.replace(/\/$/, "") + "/ping", { signal: AbortSignal.timeout(9000), headers: { "user-agent": "selfmail/1 (asking its own inbound address)" } });
+              }
+            }
             probe.ok = pr.ok;
             if (!pr.ok) probe.detail = `the tunnel answered HTTP ${pr.status}`;
             else probe.ms = Date.now() - t0;
@@ -664,7 +675,8 @@ const server = createServer(async (req, res) => {
       }
       if (path === "/api/mta" && req.method === "GET") {
         const g = gate(); if (g.deny) return send(res, g.deny.status, g.deny.json);
-        return send(res, 200, { ...(await mtaCheck()), checked: Date.now() });
+        const line = await homeLine(await publicIp());
+        return send(res, 200, { ...(await mtaCheck()), line, checked: Date.now() });
       }
       if (path === "/api/domains" && req.method === "GET") {
         const g = gate(); if (g.deny) return send(res, g.deny.status, g.deny.json);

@@ -83,6 +83,7 @@ textarea { min-height: 220px; resize: vertical; font-family: var(--mono); font-s
 @keyframes sp { to { transform: rotate(360deg); } }
 .note { border: 1px solid var(--line); border-radius: 10px; padding: 10px 14px; background: var(--card); font-size: 12.5px; color: var(--muted); margin-bottom: 14px; }
 .note.ok { color: var(--ok); border-color: rgba(53,211,154,.35); }
+.note.warn { color: var(--drop); border-color: rgba(242,181,60,.35); }
 .note.bad { color: var(--bad); border-color: rgba(244,88,122,.35); }
 pre { background: var(--bg-2); border: 1px solid var(--line); border-radius: 10px; padding: 13px; overflow: auto; font: 12px/1.55 var(--mono); max-height: 440px; white-space: pre-wrap; word-break: break-word; }
 iframe.sandbox { width: 100%; min-height: 320px; border: 1px solid var(--line); border-radius: 10px; background: #fff; }

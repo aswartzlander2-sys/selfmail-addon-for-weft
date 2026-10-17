@@ -216,7 +216,7 @@ async function drawList(box) {
   host.innerHTML = msgs.map((m) => {
     const who = box === "sent" || box === "drafts" ? (m.to || "(no one)") : (m.from || "(someone)");
     const badge = m.box === "sent" && m.delivery
-      ? m.delivery.ok === true ? `<span class="pill ok">delivered</span>`
+      ? m.delivery.ok === true ? `<span class="pill ok" title="The local mail agent accepted it; the actual delivery is its to do after that.">handed to the agent</span>`
         : m.delivery.ok == null ? '<span class="pill">saved</span>'
         : `<span class="pill bad" title="${h(m.delivery.error || m.delivery.stage || "failed")}">not delivered</span>`
       : "";
@@ -246,7 +246,7 @@ async function openMessage(id) {
   ];
   const d = m.delivery;
   const delivery = m.box === "sent" && d ? `<div class="card"><h3>Delivery</h3><div class="kv">
-      <dt>Outcome</dt><dd>${d.ok === true ? '<span class="pill ok">delivered</span>' : d.ok == null ? '<span class="pill">saved</span>' : '<span class="pill bad">not delivered</span>'}</dd>
+      <dt>Outcome</dt><dd>${d.ok === true ? '<span class="pill ok" title="The local mail agent accepted it; the actual delivery is its to do after that.">handed to the agent</span>' : d.ok == null ? '<span class="pill">saved</span>' : '<span class="pill bad">not delivered</span>'}</dd>
       <dt>Agent</dt><dd class="mono">${h(d.agent || d.via || "")}</dd>
       <dt>Says</dt><dd>${h(d.response || d.error || d.note || "")}</dd></div></div>` : "";
   const buttons = [
@@ -411,7 +411,14 @@ async function compose(prefill = {}) {
   $("#saveBtn").addEventListener("click", saveDraft);
   $("#discardBtn").addEventListener("click", () => compose());
   $("#fTo").focus();
-  api("mta").then((d) => { if (!d.ok) { const w = $("#mtaWarn"); if (w) { w.hidden = false; w.textContent = "No local mail agent is answering — this machine has nothing to hand mail to, so sending will fail. Install Postfix (or any sendmail); the Status tab shows what it finds."; } } }).catch(() => {});
+  api("mta").then((d) => {
+    const w = $("#mtaWarn"); if (!w) return;
+    if (!d.ok) { w.hidden = false; w.textContent = "No local mail agent is answering — this machine has nothing to hand mail to, so sending will fail. Install Postfix (or any sendmail); the Status tab shows what it finds."; return; }
+    if (d.line && d.line.homeLine) {
+      w.hidden = false;
+      w.textContent = `The agent answers, but this machine's line looks like a home connection (PTR: ${d.line.ptr || "none"}) — mail sent straight out from here is likely to be refused or junked by other servers, whatever the DNS records say. Give the agent a relay host: a sending service on port 587, set as relayhost in /etc/postfix/main.cf with its login in /etc/postfix/sasl_passwd. Receiving is not affected.`;
+    }
+  }).catch(() => {});
 }
 const fields = () => ({
   to: $("#fTo").value.trim(), cc: $("#fCc").value.trim(), subject: $("#fSubject").value.trim(),
@@ -662,8 +669,12 @@ async function viewStatus() {
       m.hidden = false;
       m.className = "note " + (r.ok ? "ok" : "bad");
       m.textContent = r.ok
-        ? (r.sendmail ? `sendmail: ${r.sendmail}` : "sendmail: none") + (r.smtp ? ` · MTA: "${r.smtp}"` : " · nothing on 127.0.0.1")
+        ? (r.sendmail ? `sendmail: ${r.sendmail}` : "sendmail: none") + (r.smtp ? ` · MTA: "${r.smtp}"` : " · nothing on 127.0.0.1") + (r.line ? ` · line: ${r.line.ptr || "no PTR"}` : "")
         : "No local mail agent. Install Postfix (or any sendmail) and this app hands mail to it; the app itself never connects out to deliver.";
+      if (r.ok && r.line && r.line.homeLine) {
+        m.className = "note warn";
+        m.textContent += ` — this looks like a home line, so mail sent straight out from here mostly won't arrive anywhere: other servers refuse or junk consumer addresses, and consumer ISPs block outbound port 25. A relay host for the agent fixes it (relayhost in /etc/postfix/main.cf, a sending service on port 587). Receiving is not affected.`;
+      }
     } catch (e) { m.hidden = false; m.className = "note bad"; m.textContent = e.message; }
     finally { b.disabled = false; b.textContent = "Check the local mail agent"; }
   });

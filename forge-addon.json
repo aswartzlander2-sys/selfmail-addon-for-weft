@@ -2,7 +2,7 @@
   "spec": 1,
   "id": "selfmail",
   "name": "Selfmail",
-  "version": "1.4.2",
+  "version": "1.4.3",
   "description": "Your own mail on your own domain, as a page of your Aegis \u00d7 Burrow dashboard. Accounts with passwords and roles, service accounts the machine answers for, API keys for other programs, preset responses, and invalid-address handling \u2014 HTML or plain text, sent through the machine's own mail agent, received through the default relay on every domain the machine has. Everything is kept in the addon's data folder.",
   "license": "MIT",
   "homepage": "https://github.com/alexd-aero/selfmail",
@@ -12,11 +12,11 @@
     "icon": "bolt",
     "style": "glow",
     "title": "{name} {version}",
-    "tagline": "The DNS tab shows you its values again, and checks them harder.",
+    "tagline": "Why mail you send from a home line vanishes \u2014 said out loud, and checked.",
     "highlights": [
-      "Every row's value, priority and reason show in the table again, each with a copy button",
-      "Sharper checks: questions in parallel, MX priorities read back, and DoH when plain DNS is blocked",
-      "A placeholder value says so plainly now, instead of looking ready to paste"
+      "The sending badge says what is true: handed to the agent, not delivered",
+      "A home-looking line (no PTR, or a pool-style one) gets a clear warning: send through a relay host",
+      "The inbound probe waits out Aegis's first-contact challenge instead of reading it as a fault"
     ],
     "button": "Update to {version}"
   },

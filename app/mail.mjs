@@ -749,4 +749,29 @@ export async function publicIp() {
   return "";
 }
 
+// What the internet sees when this machine speaks: the reverse-DNS of its
+// public IP. A consumer line (no PTR, or a pool-style one like
+// 136-61-33-49.googlefiber.net) is the usual reason mail "sent" from home
+// never arrives anywhere: receivers refuse or junk it, and consumer ISPs
+// block outbound port 25 outright. No DNS record fixes that — only the
+// machine's mail agent can, by sending through a relay host.
+let lineCache = { at: 0, info: null };
+export async function homeLine(ip) {
+  if (lineCache.info && lineCache.info.ip === (ip || "") && Date.now() - lineCache.at < 30 * 60 * 1000) return lineCache.info;
+  let ptr = "";
+  if (ip) {
+    // pubdns is the promises API (imported as dns.promises): reverse answers
+    // with a promise, not a callback
+    ptr = await pubdns.reverse(ip).then((names) => (names || []).join(", ")).catch(() => "");
+  }
+  const poolStyle = !ptr
+    || /(^|[.-])(\d{1,3}[-.]){3}\d{1,3}([.-]|$)/.test(ptr)      // 136-61-33-49.isp.net
+    || /(dhcp|dynamic|pppoe|dial[-]?up|pool|cpe|modem|residential|mobile|nat)/i.test(ptr);
+  const info = ip
+    ? { ip, ptr, homeLine: !!poolStyle }
+    : { ip: "", ptr: "", homeLine: false, unknown: true };   // no public IP known: the line can't be judged
+  lineCache = { at: Date.now(), info };
+  return info;
+}
+
 export { resolvePath };
