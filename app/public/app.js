@@ -535,7 +535,7 @@ async function compose(inPrefill = {}) {
   $("#fTo").focus();
   api("mta").then((d) => {
     const w = $("#mtaWarn"); if (!w) return;
-    if (!d.ok) { w.hidden = false; w.textContent = "No local mail agent is answering — this machine has nothing to hand mail to, so sending will fail. Install Postfix (or any sendmail); the Status tab shows what it finds."; return; }
+    if (!d.ok) { w.hidden = false; w.textContent = "No local mail agent is answering — this machine has nothing to hand mail to, so sending will fail. Install Postfix (or any sendmail); the Status tab shows what it finds." + (d.detail ? ` ${d.detail}` : ""); return; }
     if (d.line && d.line.homeLine) {
       w.hidden = false;
       w.textContent = `The agent answers, but this machine's line looks like a home connection (PTR: ${d.line.ptr || "none"}) — other servers refuse or junk mail sent straight out from such lines, and home ISPs usually block the agent's own outbound port. This app only hands mail to the machine's agent, exactly as selfmail does; it never connects out to deliver anything, on any port. No DNS record changes what the line allows. Receiving is not affected.`;
@@ -768,7 +768,7 @@ function drawDns(rows, table) {
         : r.ok
           ? `<span class="dot ok"></span> <code>${h(r.found || "in place")}</code>${r.via === "DoH" ? '<span class="faint small"> (asked over DoH — plain DNS is blocked here)</span>' : ""}`
           : `<span class="dot bad"></span> <code>${h(r.found || "nothing")}</code>${r.detail ? `<div class="faint small">${h(r.detail)}</div>` : ""}`;
-      const copy = r.content && !String(r.content).includes("YOUR-") ? `<button class="btn sm ghost" data-copy="${h(r.content)}" title="Copy this value for your DNS panel">copy</button>` : "";
+      const copy = r.content && !String(r.content).includes("YOUR-") && !String(r.content).startsWith("(") ? `<button class="btn sm ghost" data-copy="${h(r.content)}" title="Copy this value for your DNS panel">copy</button>` : "";
       return `<tr><td><b>${r.type}</b>${r.priority != null ? ` ${r.priority}` : ""}</td><td><code>${h(r.name)}</code></td><td><div class="row" style="gap:6px;flex-wrap:wrap"><code>${h(r.content)}</code>${copy}</div></td><td class="muted small">${h(r.note || "")}</td><td>${cell}</td></tr>`;
     }).join("");
   for (const b of table.querySelectorAll("[data-copy]")) b.addEventListener("click", async () => {
@@ -805,6 +805,7 @@ async function viewStatus() {
       m.textContent = r.ok
         ? (r.sendmail ? `sendmail: ${r.sendmail}` : "sendmail: none") + (r.smtp ? ` · MTA: "${r.smtp}"` : " · nothing on 127.0.0.1") + (r.line ? ` · line: ${r.line.ptr || "no PTR"}` : "")
         : "No local mail agent. Install Postfix (or any sendmail) and this app hands mail to it; the app itself never connects out to deliver.";
+      if (r.detail) m.textContent += ` — ${r.detail}`;
       if (r.ok && r.line && r.line.homeLine) {
         m.className = "note warn";
         m.textContent += ` — this looks like a home line: mail sent straight out from here mostly won't arrive (other servers refuse or junk consumer addresses, and home ISPs usually block the agent's own outbound port). The app hands mail to the machine's agent and never connects out itself, exactly as selfmail does; no DNS record changes what the line allows. Receiving is not affected.`;
@@ -974,7 +975,7 @@ async function viewService() {
          <div class="field"><span>What happens</span><div class="selpick"><select class="input" id="invMode" style="width:100%">
            <option value="off" ${inv.mode === "off" ? "selected" : ""}>drop it quietly</option>
            <option value="reply" ${inv.mode === "reply" ? "selected" : ""}>send the preset answer below</option>
-           <option value="catch" ${inv.mode === "catch" ? "selected" : ""}>deliver it to a catch-all account</option>
+           <option value="catch" ${inv.mode === "catch" ? "selected" : ""}>deliver it to a catch-all account — the first admin unless you pick one below</option>
          </select></div></div>
          <div class="field"><span>Answered by (service account)</span><div class="selpick"><select class="input" id="invAccount" style="width:100%">
            ${d.users.filter((u) => u.role === "service").map((u) => `<option value="${h(u.username)}" ${inv.account === u.username ? "selected" : ""}>${h(u.username)}</option>`).join("")}
@@ -1081,7 +1082,7 @@ async function viewSystem() {
   const d = await adminView(); if (!d) return;
   const inv = d.system.invalid;
   app.innerHTML = head("System", "What the machine says for itself.")
-    + `<div class="card"><h3>Invalid addresses <span class="faint">— ${inv.mode === "off" ? "dropped quietly" : inv.mode === "reply" ? `answered by ${h(inv.account)}` : `caught by ${h(inv.catch || "nobody")}`}</span></h3>
+    + `<div class="card"><h3>Invalid addresses <span class="faint">— ${inv.mode === "off" ? "dropped quietly" : inv.mode === "reply" ? `answered by ${h(inv.account)}` : `caught by ${h(inv.catch || "the first admin")}`}</span></h3>
         <div class="note">${h(inv.subject)}</div>
         <div class="row"><a class="btn" href="#/service">Change it under Service accounts</a></div></div>
        <div class="card"><h3>Accounts</h3>

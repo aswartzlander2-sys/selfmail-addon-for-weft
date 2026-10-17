@@ -409,9 +409,12 @@ async function handleInbound(raw, envelope = null) {
     const bare = bareAddr(msg.from);
     const sender = bare && goodAddress(bare) ? bare : "";
     const localSender = enabledDomains().some((d) => sender.toLowerCase().endsWith("@" + d));
-    if (inv.mode === "catch" && inv.catch && store.user(inv.catch)) {
-      store.add({ ...msg, owner: inv.catch });
-      return { delivered: [inv.catch] };
+    if (inv.mode === "catch") {
+      // where unknown-address mail lands: the account the admin chose, or the
+      // first admin — as the working selfmail files everything in its one
+      // mailbox, nothing that reached this machine is dropped on the floor
+      const who = (inv.catch && store.user(inv.catch)?.username) || primaryAccount()?.username;
+      if (who) { store.add({ ...msg, owner: who }); return { delivered: [who], catchAll: true }; }
     }
     if (inv.mode === "reply" && (inv.text || inv.html) && inv.account && store.user(inv.account) && sender && !localSender && !msg.robot) {
       const account = store.user(inv.account);
@@ -464,8 +467,16 @@ const server = createServer(async (req, res) => {
       if (String(req.headers["content-type"] || "").includes("json") || rawBody.charAt(0) === "{") {
         try {
           const p = JSON.parse(rawBody);
-          if (p && typeof p.raw === "string" && p.raw.trim()) {
-            raw = p.raw;
+          if (p && typeof p === "object") {
+            // relays differ: raw MIME, or JSON wrapping it under any of these
+            // names (sometimes nested) — all taken, as in the working selfmail
+            let r0 = p.raw || p.message || p.email || p.mime;
+            if (r0 && typeof r0 === "object") r0 = r0.raw || r0.data || null;
+            if (typeof r0 === "string" && r0.trim()) raw = r0;
+            else if (p.from || p.to || p.subject || p.text || p.html) {
+              // no raw copy at all: rebuild a message from its fields
+              raw = JSON.stringify({ from: p.from, to: p.to, cc: p.cc, subject: p.subject, date: p.date, messageId: p.messageId, text: p.text, html: p.html });
+            }
             const list = Array.isArray(p.recipients) ? p.recipients : (p.session?.recipient ? [p.session.recipient] : []);
             envelope = list.map((x) => String((typeof x === "object" && x) ? x.address || "" : x || "")).filter(Boolean);
           }
@@ -657,7 +668,7 @@ const server = createServer(async (req, res) => {
         const g = gate(); if (g.deny) return send(res, g.deny.status, g.deny.json);
         const ip = await publicIp();
         const d = dnsDomain();
-        return send(res, 200, { domain: d, records: dnsRecords({ domain: d, webhookUrl: inboundUrl(), publicIp: ip, mailbox: appConfig(DATA).mailbox }), publicIp: ip });
+        return send(res, 200, { domain: d, records: dnsRecords({ domain: d, webhookUrl: inboundUrl(), publicIp: ip, mailbox: appConfig(DATA).mailbox, dkimSelector: appConfig(DATA).dkimSelector }), publicIp: ip });
       }
       if (path === "/api/dns-check" && req.method === "GET") {
         const g = gate(); if (g.deny) return send(res, g.deny.status, g.deny.json);
@@ -667,7 +678,7 @@ const server = createServer(async (req, res) => {
         // a domain whose records were never added is a surprise no one needs
         const list = enabledDomains();
         const perDomain = await Promise.all(list.map(async (d) => {
-          const records = dnsRecords({ domain: d, webhookUrl: inUrl, publicIp: ip, mailbox: appConfig(DATA).mailbox });
+          const records = dnsRecords({ domain: d, webhookUrl: inUrl, publicIp: ip, mailbox: appConfig(DATA).mailbox, dkimSelector: appConfig(DATA).dkimSelector });
           const rows = await checkDns(records);
           // A hook record holding the placeholder can never be "in place": the
           // placeholder matches itself green, and the relay would be POSTing at

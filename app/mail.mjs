@@ -34,6 +34,17 @@ export function loadJson(path, fallback = {}) {
   try { return JSON.parse(readFileSync(path, "utf8")); } catch { return fallback; }
 }
 
+// the standalone selfmail's installer (setup.sh) asks for a DKIM selector and
+// writes its answer to /etc/selfmail/config.json. When both selfmails run on
+// the same machine — as they do here — the addon follows that choice instead
+// of assuming its own default, so the DNS tab shows the key Postfix signs with.
+function standaloneSelector() {
+  try {
+    const v = String(JSON.parse(readFileSync("/etc/selfmail/config.json", "utf8")).selector || "").trim();
+    return /^[a-z0-9][a-z0-9._-]*$/i.test(v) ? v.toLowerCase() : "";
+  } catch { return ""; }                    // not there, or not ours to read: the default stands
+}
+
 export function appConfig(dataDir) {
   const conf = loadJson(join(dataDir, "config.json"));
   const state = loadJson(join(dataDir, "state.json"));
@@ -52,6 +63,7 @@ export function appConfig(dataDir) {
     address: zone ? `${mailbox}@${zone}` : "",
     webhookWanted: String(conf.webhook ?? "1") !== "0" && conf.webhook !== false,
     inboundSecret: String(conf.inbound_secret || "").trim(),
+    dkimSelector: String(conf.dkim_selector || "").trim() || standaloneSelector() || "mail",   // where OpenDKIM's public key lives
     tunnel: state.tunnel || null,
     publishError: String(state.error || ""),
     zoneLinked: !!state.zone,
@@ -76,7 +88,9 @@ export const ROLES = ["admin", "user", "service"];
 export const defaultAutoReply = () => ({ enabled: false, subject: "Re: {subject}", text: "", html: "", cooldown: 60 });
 export const defaultSystem = () => ({
   invalid: {
-    mode: "off",                       // off | reply | catch: what happens to mail for an address no account has
+    mode: "catch",                     // off | reply | catch: what happens to mail for an address no account has.
+                                       // "catch" is the default, as in the working selfmail: mail for an unknown
+                                       // address lands with the first admin rather than vanishing. "off" drops.
     account: "subsystem",              // the service account that answers (mode "reply")
     catch: "",                         // the account that receives it instead (mode "catch")
     subject: "Undeliverable: {address}",
@@ -101,6 +115,16 @@ export class Store {
       for (const m of this.data.messages) if (m.owner == null) m.owner = "";
     }
     this.data.system = { ...defaultSystem(), ...(this.data.system || {}), invalid: { ...defaultSystem().invalid, ...((this.data.system || {}).invalid || {}) } };
+    // "off" shipped as the default for every store built before 2.0: mail for
+    // an address no account had was silently dropped. One time only, those
+    // stores move to the working default — catch, into the first admin's
+    // inbox — and an admin who truly wants drops can choose "off" again under
+    // Service accounts, where it will stick.
+    if (this.data.system.invalid.mode === "off" && this.data.system.invalidMigrated !== true) {
+      this.data.system.invalid.mode = "catch";
+      this.data.system.invalidMigrated = true;
+      this.save();
+    }
     if (!this.data.secret) this.data.secret = randomBytes(16).toString("hex");
     if (!this.data.sessionSecret) this.data.sessionSecret = randomBytes(24).toString("hex");
     // the subsystem account: what the machine itself speaks with
@@ -376,6 +400,7 @@ export function messageFromJson(o, toAddress) {
   h.push("To: " + (addr(o.to) || toAddress));
   if (o.cc) h.push("Cc: " + addr(o.cc));
   if (o.subject) h.push("Subject: " + o.subject);
+  if (o.messageId) h.push("Message-ID: " + o.messageId);
   h.push("Date: " + (o.date || new Date().toUTCString()));
   const isHtml = !o.text && o.html;
   h.push("Content-Type: text/" + (isHtml ? "html" : "plain") + "; charset=utf-8");
@@ -509,7 +534,12 @@ async function smtpTalk({ host, port, from, to, message, helo, timeout }) {
   let completed = false;
   try {
     const waitConnect = () => new Promise((ok, no) => { sock.once("connect", ok); sock.once("error", no); });
-    await waitConnect();
+    let timedOut;
+    const connectTimer = setTimeout(() => { timedOut = { code: "ETIMEDOUT", message: "connection timeout" }; try { sock.destroy(); } catch { /* */ } }, timeout);
+    connectTimer.unref?.();
+    try { await waitConnect(); }
+    catch (e) { throw (timedOut || e); }
+    finally { clearTimeout(connectTimer); }
 
     const say = (line) => sock.write(line + CRLF, "utf8");
     let r = await smtpRead(sock, timeout);
@@ -548,7 +578,7 @@ async function smtpTalk({ host, port, from, to, message, helo, timeout }) {
     if (code(r) !== 354) return { ...out, stage: "data", code: code(r), error: text(r) };
     // CRLF line endings and dot-stuffing, then the end of data
     sock.write(message.replace(/\r?\n/g, CRLF).replace(/(^|\r\n)\./g, "$1..") + CRLF + "." + CRLF, "utf8");
-    r = await smtpRead(sock, 30000);
+    r = await smtpRead(sock, 45000);      // selfmail's socket patience: 45s for the agent to take the body
     if (code(r) !== 250) return { ...out, stage: "body", code: code(r), error: text(r) };
     say("QUIT");
     completed = true;
@@ -560,53 +590,84 @@ async function smtpTalk({ host, port, from, to, message, helo, timeout }) {
   }
 }
 
-// Send one message through the machine's own mail agent, as selfmail does:
-// the sendmail binary first (no port at all), then SMTP on loopback. The
-// agent makes the outbound connection — this app never does.
-export async function sendViaLocalMta({ from, to, message, helo, host = "127.0.0.1", port = 25, timeout = 15000 }) {
-  const failures = [];
+// Send one message through the machine's own mail agent, exactly as the
+// working selfmail does: SMTP on loopback first, the sendmail binary as the
+// fallback. The agent makes the outbound connection — this app never does.
+// The caps matter: Postfix asks its milter (OpenDKIM) about every connection
+// before it greets, and a milter that is listening but not answering holds the
+// banner for its 30s default — longer than most clients wait — so every send
+// dies as "greeting never received". 8 seconds, then the other door.
+export async function sendViaLocalMta({ from, to, message, helo, host = "127.0.0.1", port = 25 }) {
+  let smtpFail;
+  try {
+    const r = await smtpTalk({ host, port, from, to, message, helo, timeout: 8000 });
+    if (r.ok) return r;
+    // a 5xx from the agent is a real answer for this recipient, not a failure
+    // to reach it: report it as-is, the way selfmail does
+    if (/^5/.test(String(r.code))) return { ...r, tried: ["smtp"] };
+    smtpFail = r;
+  } catch (e) {
+    smtpFail = { ok: false, stage: "connect", agent: `${host}:${port}`, error: `${e.code || e.message}` };
+  }
+  // The SMTP door did not answer. Hand the message to the sendmail binary
+  // instead: it writes to the maildrop queue (postdrop -> pickup -> cleanup)
+  // and never touches smtpd, so a stalled milter costs a signature, not the send.
   const bin = findSendmail();
   if (bin) {
     const r = await sendViaSendmail(message, bin);
-    if (r.ok) return r;
-    failures.push(r);
+    if (r.ok) return { ...r, note: `${host}:${port} did not answer, so the message went through ${bin} instead — see the Status tab.` };
+    return { ...r, tried: [`smtp (${smtpFail.error || smtpFail.stage})`, bin] };
   }
-  try {
-    const r = await smtpTalk({ host, port, from, to, message, helo, timeout });
-    if (r.ok) return r;
-    failures.push(r);
-    // a 5xx from the agent is a real answer for this recipient; no need to try more
-    if (/^5/.test(String(r.code))) return r;
-  } catch (e) {
-    failures.push({ ok: false, stage: "connect", agent: `${host}:${port}`, error: `${e.code || e.message}` });
-  }
-  if (failures.length) {
-    // nothing there at all: say it plainly, with the reason underneath
-    if (!bin && failures.every((f) => f.stage === "connect")) {
-      return { ok: false, stage: "local", error: `No local mail agent: no sendmail binary, and nothing is listening on ${host}:${port} (${failures.map((f) => f.error).join(", ")}). Install Postfix (or any sendmail) and Selfmail hands mail to it, as selfmail does — the app itself never connects out to deliver.` };
-    }
-    // the last, most specific failure is the honest one to report
-    const last = failures[failures.length - 1];
-    return { ...last, tried: failures.map((f) => f.agent || f.stage) };
-  }
-  return { ok: false, stage: "local", error: "No local mail agent: no sendmail binary and nothing listening on 127.0.0.1:25. Install Postfix (or any sendmail) and Selfmail hands mail to it, as selfmail does — the app itself never connects out to deliver." };
+  // neither door: probe the agent and say exactly what is wrong, in plain words
+  const probe = await probeMta({ host, port, timeout: 9000 });
+  const out = { ok: false, stage: smtpFail.stage || "smtp", agent: smtpFail.agent || `${host}:${port}`,
+                error: `${smtpFail.error || smtpFail.stage} — and no sendmail binary exists`, tried: ["smtp"] };
+  out.diagnosis = explainProbe(probe);
+  return out;
+}
+
+// Connects to the local agent and waits for its greeting, so the three
+// failures that look identical from the composer can be told apart: nothing
+// listening, something listening that is not the agent, and the agent holding
+// the connection but withholding the banner (the milter stall).
+export function probeMta({ host = "127.0.0.1", port = 25, timeout = 9000 } = {}) {
+  return new Promise((resolve) => {
+    const started = Date.now();
+    let done = false, buf = "";
+    const s = tcpConnect({ host, port });
+    const finish = (r) => { if (done) return; done = true; try { s.destroy(); } catch { /* gone */ } r.ms = Date.now() - started; resolve(r); };
+    s.setTimeout(timeout, () => finish({ ok: false, banner: buf.trim(), code: "NOGREETING" }));
+    s.on("data", (d) => {
+      buf += d.toString("utf8");
+      if (!buf.includes("\n")) return;
+      const line = buf.split("\n")[0].trim();
+      const ok = /^220[ -]/.test(line);
+      finish({ ok, banner: line, code: ok ? "" : "NOTSMTP" });
+    });
+    s.on("error", (e) => finish({ ok: false, banner: "", code: e.code || "ERROR", detail: e.message }));
+  });
+}
+
+// the probe's findings, said plainly — the same words selfmail's Status uses
+export function explainProbe(p) {
+  if (!p || p.ok) return "";
+  if (p.code === "NOGREETING")
+    return `The agent accepted the connection on 127.0.0.1:25 but sent no greeting within ${Math.round(p.ms / 1000)}s. Postfix asks its milter (OpenDKIM) about every connection before it greets, so a milter that is listening but not answering stalls it here. Check: systemctl status opendkim.`;
+  if (p.code === "ECONNREFUSED")
+    return "Nothing is listening on 127.0.0.1:25, so the machine's mail agent is not running. Check: sudo postfix status  and  sudo ss -lntp | grep :25.";
+  if (p.code === "NOTSMTP")
+    return `Port 25 answered with "${String(p.banner || "").slice(0, 120)}", which is not an SMTP greeting — something other than the mail agent owns the port. Check: sudo ss -lntp | grep :25.`;
+  return `Could not reach 127.0.0.1:25 (${p.code || "unknown"}). ${p.detail || ""}`;
 }
 
 // Is there a local mail agent at all? The one question to ask before wondering
 // why nothing arrives. Distinguishes the sendmail binary from a loopback MTA,
-// and reads the agent's greeting, like selfmail's Status tab does.
-export function mtaCheck({ host = "127.0.0.1", port = 25, timeout = 6000 } = {}) {
-  return new Promise((ok) => {
-    const sendmail = findSendmail();
-    const s = tcpConnect({ host, port });
-    const done = (smtp) => { try { s.destroy(); } catch { /* */ } ok({ sendmail: sendmail || null, smtp: smtp || null, ok: !!(sendmail || smtp) }); };
-    let buf = "";
-    s.setTimeout(timeout, () => done(buf.trim().split("\n")[0] || null));
-    s.once("connect", () => { /* the greeting decides, not the connect */ });
-    s.once("data", (d) => { buf += d.toString("utf8"); if (/^220/.test(buf)) done(buf.split(CRLF)[0].trim()); });
-    s.once("error", () => done(null));
-    s.once("close", () => done(buf.trim() ? buf.trim().split("\n")[0] : null));
-  });
+// reads the agent's greeting, and carries the probe's plain-words diagnosis.
+export async function mtaCheck({ host = "127.0.0.1", port = 25, timeout = 8000 } = {}) {
+  const sendmail = findSendmail();
+  const p = await probeMta({ host, port, timeout });
+  return { sendmail: sendmail || null, smtp: p.ok ? p.banner : null, ok: !!(sendmail || p.ok),
+           probe: p.ok ? null : p, detail: p.ok ? "" : explainProbe(p) };
 }
 
 // --------------------------------------------------------------------- the records
@@ -614,7 +675,21 @@ export function mtaCheck({ host = "127.0.0.1", port = 25, timeout = 6000 } = {})
 // POSTs each message to your public HTTPS address — the one Burrow publishes.
 // The list is ready the moment the extension is installed: the default relay
 // domains are already in it, and nothing has to be typed.
-export function dnsRecords({ domain, webhookUrl, publicIp, mailbox }) {
+// OpenDKIM's public key for a domain, exactly where selfmail's installer
+// puts it. If it cannot be read (the file belongs to root), the row still
+// appears — with the path and no invented value — because a signed message
+// with no published key fails verification at every receiver.
+export function dkimPublic(domain, selector) {
+  try {
+    const raw = readFileSync(`/etc/opendkim/keys/${domain}/${selector}.txt`, "utf8");
+    const parts = raw.match(/"([^"]*)"/g) || [];
+    return { key: parts.map((x) => x.slice(1, -1)).join(""), path: `/etc/opendkim/keys/${domain}/${selector}.txt` };
+  } catch (e) {
+    return { key: "", path: `/etc/opendkim/keys/${domain}/${selector}.txt`, unreadable: e.code || e.message };
+  }
+}
+
+export function dnsRecords({ domain, webhookUrl, publicIp, mailbox, dkimSelector = "mail" }) {
   if (!domain) return [];
   const recs = [
     { key: "mx1", type: "MX", name: domain, content: "mx1.forwardemail.net", priority: 10,
@@ -627,9 +702,21 @@ export function dnsRecords({ domain, webhookUrl, publicIp, mailbox }) {
     { key: "spf", type: "TXT", name: domain,
       content: "v=spf1 ip4:" + (publicIp || "YOUR-PUBLIC-IP") + " -all",
       note: "Authorises this machine's mail agent to send as @" + domain + ". Sending goes through it, not through the relay." },
+    { key: "dkim", type: "TXT", name: dkimSelector + "._domainkey." + domain,
+      content: (dkimPublic(domain, dkimSelector).key) || "(the key on this machine — this app could not read " + dkimPublic(domain, dkimSelector).path + ")",
+      note: "The public half of the DKIM key the machine's agent signs with. Without it, every message it sends fails DKIM and lands as spam or worse. Paste as one line." },
     { key: "dmarc", type: "TXT", name: "_dmarc." + domain, content: "v=DMARC1; p=none",
       note: "Reports only; tighten it once your mail arrives where it should." },
   ];
+  // the host the relay POSTs to must itself resolve, or no mail can arrive
+  // even with every other record perfect — worth its own row, worth its own check
+  if (webhookUrl) {
+    try {
+      const host = new URL(webhookUrl).hostname;
+      recs.push({ key: "inboundhost", type: "A", name: host, content: "(the inbound address's own host — any A or CNAME answer counts; the tunnel publishes it)",
+        note: "The host in the forward-email record above. If it stops resolving, the relay has nowhere to connect — this row asks DNS for it directly." });
+    } catch { /* the URL isn't shaped like one yet */ }
+  }
   return recs;
 }
 
@@ -697,7 +784,19 @@ export async function checkDns(records) {
       return row;
     }
     try {
-      if (r.type === "MX") {
+      if (r.type === "A") {
+        // the inbound host: any A (or AAAA, or CNAME) answer counts — it is the
+        // tunnel's name, and what it points at is the tunnel's business
+        let v = [], cname = [], via = "DNS";
+        try { v = await pubdns.resolve4(r.name); } catch { /* none or not this type */ }
+        if (!v.length) { try { v = await pubdns.resolve6(r.name); } catch { /* none */ } }
+        if (!v.length) { try { cname = await pubdns.resolveCname(r.name); } catch { /* none */ } }
+        const found = [...v, ...cname];
+        row.found = found.join(", ") || "";
+        row.via = via;
+        row.ok = found.length > 0;
+        if (!row.ok) row.detail = "This name does not resolve at all — the relay would have nowhere to connect. It is the tunnel's host; if it is missing, re-publish the tunnel (Status tab) and paste the forward-email value again.";
+      } else if (r.type === "MX") {
         const { records: v, via } = await lookup(r.name, "MX");
         row.via = via;
         row.found = v.map((x) => x.priority + " " + x.exchange.replace(/\.$/, "")).join(", ");
@@ -720,6 +819,20 @@ export async function checkDns(records) {
           row.ok = joined.some((x) => same(x, r.content));
           if (!row.ok && joined.some((x) => x.trim().indexOf("forward-email=") === 0)) row.detail = "A forward-email record exists but points elsewhere — the inbound address may have changed since it was added. Paste the value in the Value column over it.";
           else if (!row.ok) row.detail = "No forward-email record here yet — the relay will not know where to deliver until it is.";
+        } else if (r.key === "dkim") {
+          // when the local key was readable, its p= half must match what DNS
+          // carries; when it was not, an existing TXT at the selector is still
+          // better news than none at all — said honestly either way
+          const want = (String(r.content).match(/p=([A-Za-z0-9+/=]+)/) || [])[1];
+          if (want) {
+            row.ok = joined.some((x) => x.indexOf(want) !== -1);
+            if (!row.ok && joined.length) row.detail = "A DKIM record exists but its key is not the one on this machine — the key may have been regenerated since it was added. Paste the value in the Value column over it.";
+            else if (!row.ok) row.detail = "No DKIM record here yet — every message the machine signs will fail verification at receivers until it is.";
+          } else {
+            row.ok = joined.length > 0 ? null : false;
+            if (!joined.length) row.detail = "No DKIM record here yet — and this app could not read the local key to show its value (the file belongs to root). Run:  sudo cat /etc/opendkim/keys/" + r.name.split("._domainkey.")[1] + "/" + r.name.split("._domainkey.")[0] + ".txt  and paste that value here.";
+            else if (row.ok === null) { row.found = joined.join(" | "); row.detail = "A record exists at this selector; this app could not read the local key to compare it against."; }
+          }
         } else if (r.key === "dmarc") {
           row.ok = joined.some((x) => x.indexOf("v=DMARC1") === 0);
         }

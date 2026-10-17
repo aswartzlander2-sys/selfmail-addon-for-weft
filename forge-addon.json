@@ -2,7 +2,7 @@
   "spec": 1,
   "id": "selfmail",
   "name": "Selfmail",
-  "version": "1.5.0",
+  "version": "2.0.1",
   "description": "Your own mail on your own domain, as a page of your Aegis × Burrow dashboard. Accounts with passwords and roles, service accounts the machine answers for, API keys for other programs, preset responses, and invalid-address handling — HTML or plain text, sent through the machine's own mail agent, received through the default relay on every domain the machine has. Everything is kept in the addon's data folder.",
   "license": "MIT",
   "homepage": "https://github.com/alexd-aero/selfmail",
@@ -109,16 +109,16 @@
     }
   ],
   "card": {
-    "tagline": "A domain lens in the sidebar: flip a domain on and see every account's mail for it.",
+    "tagline": "The mail engine of the working selfmail: loopback-first sending, catch-all receiving, DKIM on the DNS tab.",
     "highlights": [
-      "Admins flip any domain in the rail — every account's mail for it, in every folder, owners named",
-      "Open a lens message as its account: reply, trash, delete — the usual actions, no detour",
-      "Accounts and each domain's on/off switch sit in the same rail; no domain is favored"
+      "Send tries 127.0.0.1:25 first, sendmail second — a stalled milter costs seconds, not the send",
+      "Mail for an address no account has lands with the first admin; nothing that arrives is dropped",
+      "The DNS tab now lists the DKIM record and checks the inbound host — the two rows that were missing"
     ],
     "tone": "matter-of-fact, plain-spoken, precise",
     "accent": {
       "color": "#7aa2f7",
-      "icon": "spark",
+      "icon": "rocket",
       "glow": true
     }
   }
