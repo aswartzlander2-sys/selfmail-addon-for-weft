@@ -753,8 +753,9 @@ export async function publicIp() {
 // public IP. A consumer line (no PTR, or a pool-style one like
 // 136-61-33-49.googlefiber.net) is the usual reason mail "sent" from home
 // never arrives anywhere: receivers refuse or junk it, and consumer ISPs
-// block outbound port 25 outright. No DNS record fixes that — only the
-// machine's mail agent can, by sending through a relay host.
+// block outbound port 25 outright. No DNS record changes what the line
+// allows; what the machine's own agent does about it is the machine's
+// business, exactly as in selfmail.
 let lineCache = { at: 0, info: null };
 export async function homeLine(ip) {
   if (lineCache.info && lineCache.info.ip === (ip || "") && Date.now() - lineCache.at < 30 * 60 * 1000) return lineCache.info;

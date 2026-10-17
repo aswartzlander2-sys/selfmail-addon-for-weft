@@ -416,7 +416,7 @@ async function compose(prefill = {}) {
     if (!d.ok) { w.hidden = false; w.textContent = "No local mail agent is answering — this machine has nothing to hand mail to, so sending will fail. Install Postfix (or any sendmail); the Status tab shows what it finds."; return; }
     if (d.line && d.line.homeLine) {
       w.hidden = false;
-      w.textContent = `The agent answers, but this machine's line looks like a home connection (PTR: ${d.line.ptr || "none"}) — mail sent straight out from here is likely to be refused or junked by other servers, whatever the DNS records say. Give the agent a relay host: a sending service on port 587, set as relayhost in /etc/postfix/main.cf with its login in /etc/postfix/sasl_passwd. Receiving is not affected.`;
+      w.textContent = `The agent answers, but this machine's line looks like a home connection (PTR: ${d.line.ptr || "none"}) — other servers refuse or junk mail sent straight out from such lines, and home ISPs usually block the agent's own outbound port. This app only hands mail to the machine's agent, exactly as selfmail does; it never connects out to deliver anything, on any port. No DNS record changes what the line allows. Receiving is not affected.`;
     }
   }).catch(() => {});
 }
@@ -673,7 +673,7 @@ async function viewStatus() {
         : "No local mail agent. Install Postfix (or any sendmail) and this app hands mail to it; the app itself never connects out to deliver.";
       if (r.ok && r.line && r.line.homeLine) {
         m.className = "note warn";
-        m.textContent += ` — this looks like a home line, so mail sent straight out from here mostly won't arrive anywhere: other servers refuse or junk consumer addresses, and consumer ISPs block outbound port 25. A relay host for the agent fixes it (relayhost in /etc/postfix/main.cf, a sending service on port 587). Receiving is not affected.`;
+        m.textContent += ` — this looks like a home line: mail sent straight out from here mostly won't arrive (other servers refuse or junk consumer addresses, and home ISPs usually block the agent's own outbound port). The app hands mail to the machine's agent and never connects out itself, exactly as selfmail does; no DNS record changes what the line allows. Receiving is not affected.`;
       }
     } catch (e) { m.hidden = false; m.className = "note bad"; m.textContent = e.message; }
     finally { b.disabled = false; b.textContent = "Check the local mail agent"; }
