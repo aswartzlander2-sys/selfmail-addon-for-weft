@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Selfmail</title>
 <link rel="icon" href="logo.svg" type="image/svg+xml">
-<link rel="stylesheet" href="app.css?v=1.4.5">
+<link rel="stylesheet" href="app.css?v=1.5.0">
 </head>
 <body>
 <div class="shell" id="shell" hidden>
@@ -28,6 +28,10 @@
       <a href="#/keys" data-v="keys" data-role="admin" hidden><i data-i="key"></i><span>API keys</span></a>
       <a href="#/system" data-v="system" data-role="admin" hidden><i data-i="sliders"></i><span>System</span></a>
     </nav>
+    <div class="domlens" data-role="admin" hidden>
+      <div class="rail-h">Domains</div>
+      <div id="lensList"></div>
+    </div>
     <div class="rail-foot" id="railFoot"></div>
   </aside>
   <main id="app" tabindex="-1"></main>
@@ -36,6 +40,6 @@
 <aside class="drawer" id="drawer" aria-hidden="true"><div class="drawer-in" id="drawerIn"></div></aside>
 <div class="pop" id="pop" hidden><div class="pop-card" id="popCard"></div></div>
 <div class="toast" id="toast" role="status"></div>
-<script type="module" src="app.js?v=1.4.5"></script>
+<script type="module" src="app.js?v=1.5.0"></script>
 </body>
 </html>

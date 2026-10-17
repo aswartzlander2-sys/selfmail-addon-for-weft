@@ -257,6 +257,17 @@ function effectiveUser(req, u) {
   return { auth, user: auth.user };
 }
 
+// does this message belong to a domain? Inbound mail: any address it was
+// delivered to — the envelope first, then the headers it shows. Outgoing and
+// drafts: the address it went out from (a draft keeps its chosen domain).
+const domainsIn = (s0) => { const out = []; for (const m of String(s0 || "").toLowerCase().matchAll(/[a-z0-9._%+-]+@([a-z0-9.-]+\.[a-z]{2,})/g)) out.push(m[1]); return out; };
+function messageOnDomain(m, dom) {
+  const list = m.inbound
+    ? domainsIn([m.rcpt, m.to, m.cc].filter(Boolean).join(", "))
+    : [...(m.domain ? [String(m.domain).toLowerCase()] : []), ...domainsIn(m.from)];
+  return list.includes(dom);
+}
+
 // ------------------------------------------------------------------ sending
 // Send as one account. Returns {status, json}; the message lands in that
 // account's Sent with the agent's honest verdict.
@@ -364,6 +375,10 @@ async function handleInbound(raw, envelope = null) {
   }
   if (!msg) msg = messageFromRaw(raw, fresh.address || "you@your-domain");
   msg.robot = looksAuto(raw);
+  // the envelope is the truth about which addresses (so which domains) this
+  // mail was really for — Bcc never shows in headers at all. Kept on the
+  // message so a domain lens can file it under the domain it arrived on.
+  if (envelope?.length) msg.rcpt = envelope.join(", ");
   const delivered = [];
   const routes = envelope?.length ? routesOf(envelope) : routesAt(msg);
   const accounts = [];
@@ -552,7 +567,17 @@ const server = createServer(async (req, res) => {
         const g = effectiveUser(req, u); if (g.deny) return send(res, g.deny.status, g.deny.json);
         const box = u.searchParams.get("box") || "inbox";
         if (!["inbox", "drafts", "sent", "trash"].includes(box)) return send(res, 400, { error: "No such folder." });
-        const msgs = store.list(box, g.user.username).map(({ html, text, ...rest }) => ({ ...rest, bytes: (text || "").length + (html || "").length }));
+        // the domain lens: an admin can ask for every account's mail at once,
+        // scoped to one served domain — whose mail it is rides on every row
+        const wantAll = u.searchParams.get("all") === "1";
+        if (wantAll && !isAdminAuth(g.auth)) return send(res, 403, { error: "Only an admin can list every account's mail." });
+        const dom = wantAll ? String(u.searchParams.get("domain") || "").trim().toLowerCase() : "";
+        // any of the machine's domains, served or switched off — a domain that
+        // was turned off still has its old mail, and the lens should show it
+        if (dom && !allDomains().includes(dom)) return send(res, 400, { error: "Not one of this machine's domains." });
+        let base = store.list(box, wantAll ? null : g.user.username);
+        if (dom) base = base.filter((m) => messageOnDomain(m, dom));
+        const msgs = base.map(({ html, text, ...rest }) => ({ ...rest, bytes: (text || "").length + (html || "").length, ...(wantAll ? { ownerName: store.user(rest.owner)?.name || rest.owner } : {}) }));
         return send(res, 200, msgs);
       }
 
@@ -561,7 +586,9 @@ const server = createServer(async (req, res) => {
         const g = effectiveUser(req, u); if (g.deny) return send(res, g.deny.status, g.deny.json);
         const msg = store.get(one[1]);
         if (!msg || msg.owner !== g.user.username) return send(res, 404, { error: "No such message." });
-        if (!one[2] && req.method === "GET") return send(res, 200, msg);
+        // whose mailbox this sits in rides along whenever it isn't the asker's
+        // own — the domain lens and the admin "open" view both want to say so
+        if (!one[2] && req.method === "GET") return send(res, 200, msg.owner !== g.auth.user.username ? { ...msg, ownerName: store.user(msg.owner)?.name || msg.owner } : msg);
         if (one[3] === "read" && req.method === "POST") {
           const f = await body();
           store.update(msg.id, { read: !!f.read });

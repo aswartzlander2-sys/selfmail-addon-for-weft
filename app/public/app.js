@@ -80,7 +80,7 @@ function modal(html) {
   return { el: card, close };
 }
 
-const S = { session: null, view: null, as: null, editing: null, admin: null };
+const S = { session: null, view: null, as: null, editing: null, admin: null, pendingCompose: null };
 const isAdmin = () => S.session?.user?.role === "admin";
 const me = () => S.as || S.session?.user?.username;
 const asParam = () => (S.as && S.as !== S.session?.user?.username ? `?as=${encodeURIComponent(S.as)}` : "");
@@ -107,6 +107,7 @@ async function refresh() {
     <a href="#/account" class="row" style="gap:6px;color:var(--faint)">account</a>
     <button class="btn sm ghost" id="signOut" style="justify-content:center">Sign out</button>`;
   $("#signOut").addEventListener("click", async () => { try { await api("logout", { method: "POST" }); } catch {} location.hash = "#/"; location.reload(); });
+  renderLens();
 }
 
 // ------------------------------------------------------------------ sign-in
@@ -187,7 +188,11 @@ function route(hash) {
   S.view = v && VIEWS[v] && allowed ? v : (S.session?.user ? "inbox" : null);
   if (!S.view) return signOutView();
   for (const a of document.querySelectorAll("#nav a")) a.classList.toggle("on", a.dataset.v === S.view);
-  VIEWS[S.view]();
+  // a reply/forward/edit hands its prefill to the composer through here: the
+  // hash change and the direct call must not both run compose, or the empty
+  // one renders last and quietly wipes the prefill
+  const pre = S.pendingCompose; S.pendingCompose = null;
+  VIEWS[S.view](pre);
   app.focus({ preventScroll: true });
 }
 window.addEventListener("hashchange", () => route(location.hash));
@@ -209,12 +214,14 @@ async function drawList(box) {
   const host = $(`#list-${box}`);
   if (!host) return;
   host.innerHTML = `<div class="empty"><span class="spin"></span> Loading…</div>`;
+  const lens = lensOn();
   let msgs;
-  try { msgs = await api(`messages?box=${box}${S.as && S.as !== S.session.user.username ? `&as=${encodeURIComponent(S.as)}` : ""}`); }
+  try { msgs = await api(`messages?box=${box}${lens ? `&all=1&domain=${encodeURIComponent(lens)}` : (S.as && S.as !== S.session.user.username ? `&as=${encodeURIComponent(S.as)}` : "")}`); }
   catch (e) { host.innerHTML = `<div class="empty">${h(e.message)}</div>`; return; }
-  if (!msgs.length) { host.innerHTML = `<div class="empty">${EMPTY[box]}</div>`; return; }
+  if (!msgs.length) { host.innerHTML = `<div class="empty">${lens ? EMPTY_LENS[box] : EMPTY[box]}</div>`; return; }
   host.innerHTML = msgs.map((m) => {
     const who = box === "sent" || box === "drafts" ? (m.to || "(no one)") : (m.from || "(someone)");
+    const owner = lens && m.owner ? `<span class="pill" title="This sits in ${h(m.ownerName || m.owner)}'s mailbox">${h(m.ownerName || m.owner)}</span>` : "";
     const badge = m.box === "sent" && m.delivery
       ? m.delivery.ok === true ? `<span class="pill ok" title="The local mail agent accepted it; the actual delivery is its to do after that.">handed to the agent</span>`
         : m.delivery.ok == null ? '<span class="pill">saved</span>'
@@ -222,16 +229,37 @@ async function drawList(box) {
       : "";
     const auto = m.auto ? '<span class="pill auto">auto</span>' : "";
     return `<button class="item${m.read ? "" : " unread"}" data-id="${m.id}">
-      <span class="top"><span class="who">${h(who)}</span>${badge}${auto}<span class="when">${when(m.date)}</span></span>
+      <span class="top"><span class="who">${h(who)}</span>${owner}${badge}${auto}<span class="when">${when(m.date)}</span></span>
       <span class="subj">${h(m.subject || "(no subject)")}</span>
       <span class="snip">${h(m.snippet || "")}</span>
     </button>`;
   }).join("");
-  for (const el of host.querySelectorAll(".item")) el.addEventListener("click", () => openMessage(el.dataset.id));
+  for (const el of host.querySelectorAll(".item")) el.addEventListener("click", () => {
+    // a lens row belongs to one of the accounts: open it as that account, the
+    // way an admin opens any mailbox — every action on it then just works
+    const m = msgs.find((x) => x.id === el.dataset.id);
+    if (lens && m && m.owner && m.owner !== S.session?.user?.username && isAdmin()) {
+      S.as = m.owner;
+      // the bar must appear at once — acting as someone is not a silent thing
+      if (!app.querySelector(".asbar")) { app.insertAdjacentHTML("afterbegin", asBar()); wireAsBar(); }
+    }
+    openMessage(el.dataset.id);
+  });
+  if (lens && box === "inbox") {           // the rail badge counts the lens, not just me
+    const n = msgs.filter((m) => !m.read).length;
+    $("#cInbox").textContent = n ? String(n) : "";
+    $("#cInbox").className = "count" + (n ? " alert" : "");
+  }
 }
 // the domain chosen on the Inbox screen, kept for new mail ("Sending from" pick)
 const savedDomain = () => { try { return localStorage.getItem("selfmail:domain") || ""; } catch { return ""; } };
+// the domain lens (admins): flip a domain on in the rail and every mail view
+// lists every account's mail for it — kept on the device, like the sending pick
+const lensDomain = () => { try { return localStorage.getItem("selfmail:lens") || ""; } catch { return ""; } };
+const setLensDomain = (d) => { try { d ? localStorage.setItem("selfmail:lens", d) : localStorage.removeItem("selfmail:lens"); } catch {} };
+const lensOn = () => (isAdmin() && lensDomain() && (S.session?.user?.role === "admin") ? lensDomain() : "");
 async function viewInbox() {
+  if (lensOn()) return lensView("inbox", "Inbox");
   const dv = await api("domains").catch(() => ({ enabled: [], primary: "" }));
   const doms = (dv.enabled || []).slice();
   const saved = savedDomain();
@@ -249,9 +277,70 @@ async function viewInbox() {
   });
   drawList("inbox");
 }
-async function viewDrafts() { app.innerHTML = asBar() + head("Drafts", "Saved half-written.") + `<div class="mail" id="list-drafts"></div>`; wireAsBar(); drawList("drafts"); }
-async function viewSent() { app.innerHTML = asBar() + head("Sent", "Every message with its real fate, as the local mail agent reported it.") + `<div class="mail" id="list-sent"></div>`; wireAsBar(); drawList("sent"); }
-async function viewTrash() { app.innerHTML = asBar() + head("Trash", "Deleted mail waits here until you remove it for good.") + `<div class="mail" id="list-trash"></div>`; wireAsBar(); drawList("trash"); }
+async function viewDrafts() { if (lensOn()) return lensView("drafts", "Drafts"); app.innerHTML = asBar() + head("Drafts", "Saved half-written.") + `<div class="mail" id="list-drafts"></div>`; wireAsBar(); drawList("drafts"); }
+async function viewSent() { if (lensOn()) return lensView("sent", "Sent"); app.innerHTML = asBar() + head("Sent", "Every message with its real fate, as the local mail agent reported it.") + `<div class="mail" id="list-sent"></div>`; wireAsBar(); drawList("sent"); }
+async function viewTrash() { if (lensOn()) return lensView("trash", "Trash"); app.innerHTML = asBar() + head("Trash", "Deleted mail waits here until you remove it for good.") + `<div class="mail" id="list-trash"></div>`; wireAsBar(); drawList("trash"); }
+
+// ------------------------------------------------------------- the domain lens
+const EMPTY_LENS = {
+  inbox: "No mail addressed to this domain has arrived for any account yet.",
+  drafts: "No drafts on this domain for any account.",
+  sent: "Nothing has been sent from this domain yet.",
+  trash: "Nothing deleted on this domain.",
+};
+const LENS_SUB = {
+  inbox: "Every account on this machine — mail addressed to this domain.",
+  drafts: "Every account on this machine — drafts for this domain.",
+  sent: "Every account on this machine — mail sent from this domain.",
+  trash: "Every account on this machine — deleted mail on this domain.",
+};
+async function lensView(box, title) {
+  const lens = lensOn();
+  app.innerHTML = asBar() + head(`${title} — ${h(lens)}`, LENS_SUB[box]) + await lensStrip() + `<div class="mail" id="list-${box}"></div>`;
+  wireAsBar();
+  for (const b of app.querySelectorAll("[data-lensopen]")) b.addEventListener("click", () => {
+    // into that account's own mail: the lens goes off, the "as" view takes over
+    S.as = b.dataset.lensopen; setLensDomain(""); renderLens(); location.hash = "#/inbox"; route(location.hash);
+  });
+  drawList(box);
+}
+// every account this machine answers for, one click from their mail and one
+// from managing them — the "see all of the accounts" half of the lens
+async function lensStrip() {
+  const d = await api("admin/view").catch(() => null);
+  if (!d) return "";
+  const users = (d.users || []).filter((u) => u.role !== "service");
+  return `<div class="row" style="gap:6px;flex-wrap:wrap;margin-bottom:12px"><span class="faint small">Accounts:</span>`
+    + users.map((u) => `<button class="btn sm ghost" data-lensopen="${h(u.username)}" title="Open ${h(u.name || u.username)}'s own mail">${h(u.name || u.username)}</button>`).join("")
+    + `<a class="btn sm ghost" href="#/users">manage</a></div>`;
+}
+// the rail block: one row per domain, no domain favored over another, each
+// carrying its own on/off switch (the machine's main domain is always served)
+async function renderLens() {
+  const host = $("#lensList");
+  if (!host || !isAdmin()) return;
+  const dv = await api("domains").catch(() => null);
+  if (!dv) return;
+  let cur = lensDomain();
+  if (!dv.all.includes(cur)) { cur = ""; setLensDomain(""); }   // off is fine: its old mail remains
+  // the row's name is a button and its switch sits beside it, not inside it —
+  // a checkbox nested in a button never toggles in a browser
+  host.innerHTML = `<div class="lensrow${cur ? "" : " on"}"><button class="lensname" data-lens="">My mail</button></div>`
+    + dv.all.map((z) => `<div class="lensrow${cur === z ? " on" : ""}${dv.enabled.includes(z) ? "" : " off"}">`
+        + `<button class="lensname mono" data-lens="${h(z)}" title="Every account's mail for ${h(z)}">${h(z)}</button>`
+        + `<label class="switch" title="${z === dv.primary ? "The machine's main domain is always served" : "Serve " + h(z) + " or not"}"><input type="checkbox" data-dom="${h(z)}" ${dv.enabled.includes(z) ? "checked" : ""} ${z === dv.primary ? "disabled" : ""}><i></i></label></div>`).join("");
+  for (const b of host.querySelectorAll("[data-lens]")) b.addEventListener("click", () => {
+    if (!b.dataset.lens) S.as = null;          // "My mail" means mine: leave any as-view too
+    setLensDomain(b.dataset.lens === lensDomain() ? "" : b.dataset.lens);
+    renderLens();
+    route(location.hash);
+  });
+  for (const sw of host.querySelectorAll("[data-dom]")) sw.addEventListener("change", async () => {
+    try { await api("admin/domains", { method: "PUT", body: { domain: sw.dataset.dom, on: sw.checked } }); toast(`${sw.dataset.dom} ${sw.checked ? "served" : "off"}.`); }
+    catch (e) { toast(e.message); }
+    renderLens();
+  });
+}
 Object.assign(VIEWS, { inbox: viewInbox, drafts: viewDrafts, sent: viewSent, trash: viewTrash });
 
 // ------------------------------------------------------------------ reading
@@ -268,6 +357,8 @@ async function openMessage(id) {
       <dt>Outcome</dt><dd>${d.ok === true ? '<span class="pill ok" title="The local mail agent accepted it; the actual delivery is its to do after that.">handed to the agent</span>' : d.ok == null ? '<span class="pill">saved</span>' : '<span class="pill bad">not delivered</span>'}</dd>
       <dt>Agent</dt><dd class="mono">${h(d.agent || d.via || "")}</dd>
       <dt>Says</dt><dd>${h(d.response || d.error || d.note || "")}</dd></div></div>` : "";
+  const mine = !m.owner || m.owner === S.session?.user?.username;
+  const inPill = !mine && isAdmin() ? `<span class="pill" title="You are acting on ${h(m.ownerName || m.owner)}'s mail">in ${h(m.ownerName || m.owner)}'s mailbox</span>` : "";
   const buttons = [
     d && d.ok === false ? `<button class="btn" data-act="retry">Try again</button>` : "",
     m.box === "drafts" ? `<button class="btn" data-act="edit">Edit draft</button>` : "",
@@ -278,7 +369,7 @@ async function openMessage(id) {
     `<button class="btn danger" data-act="delete">Delete for good</button>`,
   ].join("");
   $("#drawerIn").innerHTML = `
-    <div class="row"><button class="btn ghost" data-act="close">${ICONS.back} Close</button><span style="flex:1"></span>${m.auto ? '<span class="pill auto">auto</span>' : ""}</div>
+    <div class="row"><button class="btn ghost" data-act="close">${ICONS.back} Close</button>${inPill}<span style="flex:1"></span>${m.auto ? '<span class="pill auto">auto</span>' : ""}</div>
     <h2>${h(m.subject || "(no subject)")}</h2>
     <div class="kv">${heads.map(([k, v]) => `<dt>${k}</dt><dd class="mono">${h(v || "")}</dd>`).join("")}</div>
     ${delivery}
@@ -304,21 +395,27 @@ async function act(what, m) {
     if (what === "retry") { const r = await api(`resend${asParam()}`, { method: "POST", body: { id: m.id } }); await refresh(); return openMessage(r.id); }
     if (what === "reply") {
       const quoted = (m.text || "").split("\n").map((l) => "> " + l).join("\n");
-      const pre = { to: m.from || "", subject: /^re:/i.test(m.subject || "") ? m.subject : "Re: " + (m.subject || ""), text: quoted ? `\n\n${quoted}` : "", inReplyTo: m.messageId || "", domain: String(m.to || "").split(",")[0].trim().split("@").pop().toLowerCase() };
+      // reply from the domain the mail actually arrived on — the envelope
+      // knows (Bcc hides in no header), the To: header is only the fallback
+      const arrDom = String(m.rcpt || m.to || "").split(",")[0].trim().split("@").pop().toLowerCase();
+      const pre = { to: m.from || "", subject: /^re:/i.test(m.subject || "") ? m.subject : "Re: " + (m.subject || ""), text: quoted ? `\n\n${quoted}` : "", inReplyTo: m.messageId || "", domain: arrDom };
       if (m.html) { pre.mode = "html"; pre.html = `<p><br></p><blockquote>${sanitizeHtml(m.html)}</blockquote>`; }
-      closeDrawer(); location.hash = "#/compose";
-      return compose(pre);
+      closeDrawer(); S.pendingCompose = pre;
+      if (location.hash === "#/compose") return compose(pre);
+      location.hash = "#/compose";
     }
     if (what === "forward") {
       const head = [`From: ${m.from || ""}`, `Date: ${new Date(m.date).toLocaleString()}`, `Subject: ${m.subject || ""}`, ...(m.to ? [`To: ${m.to}`] : [])].join("\n");
       const pre = { subject: /^fwd:/i.test(m.subject || "") ? m.subject : "Fwd: " + (m.subject || ""), text: `\n\n---------- Forwarded message ----------\n${head}\n\n${(m.text || "").split("\n").map((l) => "> " + l).join("\n")}` };
       if (m.html) { pre.mode = "html"; pre.html = `<p>---------- Forwarded message ----------</p><p>${h(head).replace(/\n/g, "<br>")}</p><blockquote>${sanitizeHtml(m.html)}</blockquote>`; }
-      closeDrawer(); location.hash = "#/compose";
-      return compose(pre);
+      closeDrawer(); S.pendingCompose = pre;
+      if (location.hash === "#/compose") return compose(pre);
+      location.hash = "#/compose";
     }
     if (what === "edit") {
-      closeDrawer(); location.hash = "#/compose";
-      return compose({ id: m.id, to: m.to || "", cc: m.cc || "", subject: m.subject || "", text: m.text || "", inReplyTo: m.inReplyTo || "", mode: m.html ? "html" : "text", html: m.html || "", domain: m.domain || "" });
+      closeDrawer(); S.pendingCompose = { id: m.id, to: m.to || "", cc: m.cc || "", subject: m.subject || "", text: m.text || "", inReplyTo: m.inReplyTo || "", mode: m.html ? "html" : "text", html: m.html || "", domain: m.domain || "" };
+      if (location.hash === "#/compose") return compose(S.pendingCompose);
+      location.hash = "#/compose";
     }
     if (what === "formatted") {
       const box = $("#formattedBox");
@@ -353,7 +450,8 @@ function setMode(mode) {
   else ta.value = ed.innerText;
   if (mode === "html") { delete ed.dataset.preload; ed.focus(); } else ta.focus();
 }
-async function compose(prefill = {}) {
+async function compose(inPrefill = {}) {
+  const prefill = inPrefill || {};          // route() hands over null when nothing is pending
   S.editing = prefill.id || null;
   S.inReplyTo = prefill.inReplyTo || "";
   S.mode = prefill.html ? "html" : "text";
@@ -363,7 +461,9 @@ async function compose(prefill = {}) {
   // a domain picked on the Inbox screen wins for new mail, unless this is an
   // edit or a reply, whose own From should not move under the user
   const saved = savedDomain();
-  const pick = prefill.domain || (dv.enabled.includes(saved) ? saved : "") || dv.primary || dv.enabled[0] || "";
+  const lens = lensOn();
+  const pd = dv.enabled.includes(prefill.domain) ? prefill.domain : "";   // headers can name any domain; only a served one counts
+  const pick = pd || (lens && dv.enabled.includes(lens) ? lens : "") || (dv.enabled.includes(saved) ? saved : "") || dv.primary || dv.enabled[0] || "";
   const fromRow = `<div class="fromrow">From ${
     dv.enabled.length > 1
       ? `<div class="selpick"><select class="input" id="fDomain" style="width:auto;padding:3px 26px 3px 8px;font-size:12px">${dv.enabled.map((z) => `<option value="${h(z)}" ${z === pick ? "selected" : ""}>${h(who)}@${h(z)}</option>`).join("")}</select></div>`
@@ -610,8 +710,9 @@ async function viewDns() {
        <div id="dnsWrap"></div>`;
   $("#dnsCheckBtn").addEventListener("click", checkDns);
   for (const sw of app.querySelectorAll("[data-dom]")) sw.addEventListener("change", async () => {
-    try { await api("admin/domains", { method: "PUT", body: { domain: sw.dataset.dom, on: sw.checked } }); toast(`${sw.dataset.dom} ${sw.checked ? "served" : "off"}.`); viewDns(); }
-    catch (e) { toast(e.message); viewDns(); }
+    try { await api("admin/domains", { method: "PUT", body: { domain: sw.dataset.dom, on: sw.checked } }); toast(`${sw.dataset.dom} ${sw.checked ? "served" : "off"}.`); }
+    catch (e) { toast(e.message); }
+    renderLens(); viewDns();
   });
   checkDns();          // the truth on arrival, not only on request
 }
