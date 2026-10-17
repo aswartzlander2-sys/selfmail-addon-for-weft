@@ -635,38 +635,102 @@ export function dnsRecords({ domain, webhookUrl, publicIp, mailbox }) {
 const pubdns = new dns.Resolver({ timeout: 4000, tries: 1 });
 try { pubdns.setServers(["1.1.1.1", "8.8.8.8", "9.9.9.9"]); } catch { /* fall back */ }
 
+// When the network blocks plain DNS to those servers (some do), ask the same
+// question over HTTPS: Cloudflare's and Google's resolvers answer the same
+// JSON shape, and a machine that pulls updates from GitHub already speaks
+// HTTPS outbound.
+async function doh(name, type) {
+  for (const base of ["https://cloudflare-dns.com/dns-query", "https://dns.google/resolve"]) {
+    try {
+      const r = await fetch(`${base}?name=${encodeURIComponent(name)}&type=${type}`,
+        { headers: { accept: "application/dns-json" }, signal: AbortSignal.timeout(6000) });
+      if (!r.ok) continue;
+      const j = await r.json();
+      if (typeof j.Status !== "number") continue;
+      const answers = Array.isArray(j.Answer) ? j.Answer : [];
+      if (type === "MX") {
+        const records = answers.filter((a) => a.type === 15).map((a) => {
+          const m = /^\s*(\d+)\s+(\S+?)\.?\s*$/.exec(String(a.data || ""));
+          return m ? { priority: Number(m[1]), exchange: m[2] } : { priority: 0, exchange: String(a.data || "").trim().replace(/\.$/, "") };
+        });
+        return { records, via: "DoH" };
+      }
+      const records = answers.filter((a) => a.type === 16)
+        .map((a) => [String(a.data || "").replace(/^"/, "").replace(/"$/, "").replace(/\\"/g, '"')]);
+      return { records, via: "DoH" };
+    } catch { /* try the next */ }
+  }
+  return null;
+}
+
+// One lookup per (name, type), shared by the rows that ask the same question:
+// both MX rows ask about the apex, and so do the two TXT rows there.
 export async function checkDns(records) {
-  const out = [];
-  for (const r of records) {
-    const row = { key: r.key, type: r.type, name: r.name, expected: r.content, ok: false, found: "", detail: "" };
+  const lookups = new Map();
+  const lookup = (name, type) => {
+    const k = type + " " + name;
+    if (!lookups.has(k)) lookups.set(k, (async () => {
+      try {
+        return type === "MX"
+          ? { records: await pubdns.resolveMx(name), via: "DNS" }
+          : { records: await pubdns.resolveTxt(name), via: "DNS" };
+      } catch (e) {
+        if (e.code === "ENOTFOUND" || e.code === "ENODATA") return { records: [], via: "DNS", none: true };
+        const overDoh = await doh(name, type);
+        if (overDoh) return overDoh;
+        throw e;
+      }
+    })());
+    return lookups.get(k);
+  };
+  const rows = await Promise.all(records.map(async (r) => {
+    // what the page needs to show: the value itself, why it exists, and for MX
+    // the priority — the check is the table, not a side note to it
+    const row = { key: r.key, type: r.type, name: r.name, content: r.content, priority: r.priority ?? null,
+                  note: r.note || "", expected: r.content, ok: null, found: "", via: "", detail: "" };
+    if (String(r.content || "").includes("YOUR-")) {
+      row.detail = "This value is still a placeholder — the " + (r.key === "spf" ? "machine's public IP" : "inbound address")
+        + " isn't known yet. It fills itself in once the host publishes it; paste the value only when the real one shows here.";
+      return row;
+    }
     try {
       if (r.type === "MX") {
-        const v = await pubdns.resolveMx(r.name);
-        row.found = v.map((x) => x.priority + " " + x.exchange).join(", ");
-        row.ok = v.some((x) => x.exchange.replace(/\.$/, "").toLowerCase() === r.content.toLowerCase());
+        const { records: v, via } = await lookup(r.name, "MX");
+        row.via = via;
+        row.found = v.map((x) => x.priority + " " + x.exchange.replace(/\.$/, "")).join(", ");
+        const hit = v.find((x) => x.exchange.replace(/\.$/, "").toLowerCase() === String(r.content).toLowerCase());
+        row.ok = !!hit;
         if (!row.ok && v.length) row.detail = "MX answers for this name, but not this host.";
+        else if (row.ok && r.priority != null && hit.priority !== r.priority)
+          row.detail = `In place with priority ${hit.priority} instead of ${r.priority} — the relay takes either.`;
       } else {
-        const v = await pubdns.resolveTxt(r.name);
-        const joined = v.map((x) => x.join(""));
+        const { records: chunks, via } = await lookup(r.name, "TXT");
+        row.via = via;
+        const joined = chunks.map((x) => (Array.isArray(x) ? x.join("") : String(x)));
         row.found = joined.join(" | ");
+        const same = (a, b) => String(a).trim().replace(/\/+$/, "") === String(b).trim().replace(/\/+$/, "");
         if (r.key === "spf") {
-          row.ok = joined.some((x) => x.trim() === r.content);
-          if (!row.ok && joined.some((x) => x.indexOf("v=spf1") === 0)) row.detail = "An SPF record exists but does not match exactly.";
+          row.ok = joined.some((x) => same(x, r.content));
+          if (!row.ok && joined.some((x) => x.trim().indexOf("v=spf1") === 0)) row.detail = "An SPF record exists but does not match exactly — the machine's public IP may have changed since it was added. Paste the value in the Value column over it.";
+          else if (!row.ok) row.detail = "No SPF record here yet — mail you send may look forged to other servers until it is in.";
         } else if (r.key === "hook") {
-          row.ok = joined.some((x) => x.trim() === r.content);
+          row.ok = joined.some((x) => same(x, r.content));
           if (!row.ok && joined.some((x) => x.trim().indexOf("forward-email=") === 0)) row.detail = "A forward-email record exists but points elsewhere — the inbound address may have changed since it was added. Paste the value in the Value column over it.";
+          else if (!row.ok) row.detail = "No forward-email record here yet — the relay will not know where to deliver until it is.";
         } else if (r.key === "dmarc") {
           row.ok = joined.some((x) => x.indexOf("v=DMARC1") === 0);
         }
       }
+      if (!row.ok && !row.found && !row.detail)
+        row.detail = "No such record found yet — one just added takes a few minutes to spread; try again shortly.";
     } catch (e) {
-      if (e.code === "ENOTFOUND" || e.code === "ENODATA") row.detail = "No such record found yet — one just added takes a few minutes to spread; try again shortly.";
-      else if (e.code === "ETIMEOUT" || e.code === "ESERVFAIL" || e.code === "ECONNREFUSED" || e.code === "EAI_AGAIN") row.detail = `Could not ask (${e.code}): this network may block direct DNS to 1.1.1.1/8.8.8.8 — the check needs it, the mail does not.`;
+      if (e.code === "ETIMEOUT" || e.code === "ESERVFAIL" || e.code === "ECONNREFUSED" || e.code === "EAI_AGAIN")
+        row.detail = `Could not ask (${e.code}): plain DNS and DNS-over-HTTPS both failed from this network — the check needs one of them, the mail does not.`;
       else row.detail = String(e.code || e.message);
     }
-    out.push(row);
-  }
-  return out;
+    return row;
+  }));
+  return rows;
 }
 
 // --------------------------------------------------------------------- public IP

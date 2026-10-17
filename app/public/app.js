@@ -622,11 +622,18 @@ async function checkDns() {
 function drawDns(rows) {
   $("#dnsTable").innerHTML = `<tr><th>Type</th><th>Name</th><th>Value</th><th>Why</th><th>Public DNS says</th></tr>` +
     rows.map((r) => {
-      const cell = r.ok == null ? '<span class="faint">—</span>' : r.ok
-        ? `<span class="dot ok"></span> <code>${h(r.found || "in place")}</code>`
-        : `<span class="dot bad"></span> <code>${h(r.found || "nothing")}</code>${r.detail ? `<div class="faint small">${h(r.detail)}</div>` : ""}`;
-      return `<tr><td><b>${r.type}</b>${r.priority != null ? ` ${r.priority}` : ""}</td><td><code>${h(r.name)}</code></td><td><code>${h(r.content)}</code></td><td class="muted small">${h(r.note || "")}</td><td>${cell}</td></tr>`;
+      const cell = r.ok == null
+        ? `<span class="faint">—</span>${r.detail ? `<div class="faint small">${h(r.detail)}</div>` : ""}`
+        : r.ok
+          ? `<span class="dot ok"></span> <code>${h(r.found || "in place")}</code>${r.via === "DoH" ? '<span class="faint small"> (asked over DoH — plain DNS is blocked here)</span>' : ""}`
+          : `<span class="dot bad"></span> <code>${h(r.found || "nothing")}</code>${r.detail ? `<div class="faint small">${h(r.detail)}</div>` : ""}`;
+      const copy = r.content && !String(r.content).includes("YOUR-") ? `<button class="btn sm ghost" data-copy="${h(r.content)}" title="Copy this value for your DNS panel">copy</button>` : "";
+      return `<tr><td><b>${r.type}</b>${r.priority != null ? ` ${r.priority}` : ""}</td><td><code>${h(r.name)}</code></td><td><div class="row" style="gap:6px;flex-wrap:wrap"><code>${h(r.content)}</code>${copy}</div></td><td class="muted small">${h(r.note || "")}</td><td>${cell}</td></tr>`;
     }).join("");
+  for (const b of $("#dnsTable").querySelectorAll("[data-copy]")) b.addEventListener("click", async () => {
+    try { await navigator.clipboard.writeText(b.dataset.copy); toast("Copied — paste it into your DNS panel."); }
+    catch { toast("Couldn't copy from here — select the value and copy by hand."); }
+  });
 }
 VIEWS.dns = viewDns;
 
