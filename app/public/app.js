@@ -229,7 +229,26 @@ async function drawList(box) {
   }).join("");
   for (const el of host.querySelectorAll(".item")) el.addEventListener("click", () => openMessage(el.dataset.id));
 }
-async function viewInbox() { app.innerHTML = asBar() + head("Inbox", "Mail a relay forwards to this account lands here.") + `<div class="mail" id="list-inbox"></div>`; wireAsBar(); drawList("inbox"); }
+// the domain chosen on the Inbox screen, kept for new mail ("Sending from" pick)
+const savedDomain = () => { try { return localStorage.getItem("selfmail:domain") || ""; } catch { return ""; } };
+async function viewInbox() {
+  const dv = await api("domains").catch(() => ({ enabled: [], primary: "" }));
+  const doms = (dv.enabled || []).slice();
+  const saved = savedDomain();
+  const cur = doms.includes(saved) ? saved : (dv.primary || doms[0] || "");
+  // one pick, kept on this device: every new message starts as you@this-domain
+  const pick = doms.length > 1
+    ? `<div class="dompick"><span class="faint">Sending from</span><div class="selpick"><select class="input" id="homeDomain" title="The domain new mail is sent from" style="width:auto;padding:3px 26px 3px 8px;font-size:12px">${doms.map((z) => `<option value="${h(z)}" ${z === cur ? "selected" : ""}>${h(z)}</option>`).join("")}</select></div></div>`
+    : "";
+  app.innerHTML = asBar() + head("Inbox", "Mail a relay forwards to this account lands here.", pick) + `<div class="mail" id="list-inbox"></div>`;
+  wireAsBar();
+  const sel = $("#homeDomain");
+  if (sel) sel.addEventListener("change", () => {
+    try { localStorage.setItem("selfmail:domain", sel.value); } catch {}
+    toast(`New mail will go out from ${sel.value}.`);
+  });
+  drawList("inbox");
+}
 async function viewDrafts() { app.innerHTML = asBar() + head("Drafts", "Saved half-written.") + `<div class="mail" id="list-drafts"></div>`; wireAsBar(); drawList("drafts"); }
 async function viewSent() { app.innerHTML = asBar() + head("Sent", "Every message with its real fate, as the local mail agent reported it.") + `<div class="mail" id="list-sent"></div>`; wireAsBar(); drawList("sent"); }
 async function viewTrash() { app.innerHTML = asBar() + head("Trash", "Deleted mail waits here until you remove it for good.") + `<div class="mail" id="list-trash"></div>`; wireAsBar(); drawList("trash"); }
@@ -285,7 +304,7 @@ async function act(what, m) {
     if (what === "retry") { const r = await api(`resend${asParam()}`, { method: "POST", body: { id: m.id } }); await refresh(); return openMessage(r.id); }
     if (what === "reply") {
       const quoted = (m.text || "").split("\n").map((l) => "> " + l).join("\n");
-      const pre = { to: m.from || "", subject: /^re:/i.test(m.subject || "") ? m.subject : "Re: " + (m.subject || ""), text: quoted ? `\n\n${quoted}` : "", inReplyTo: m.messageId || "" };
+      const pre = { to: m.from || "", subject: /^re:/i.test(m.subject || "") ? m.subject : "Re: " + (m.subject || ""), text: quoted ? `\n\n${quoted}` : "", inReplyTo: m.messageId || "", domain: String(m.to || "").split(",")[0].trim().split("@").pop().toLowerCase() };
       if (m.html) { pre.mode = "html"; pre.html = `<p><br></p><blockquote>${sanitizeHtml(m.html)}</blockquote>`; }
       closeDrawer(); location.hash = "#/compose";
       return compose(pre);
@@ -341,7 +360,10 @@ async function compose(prefill = {}) {
   const who = S.as && S.as !== S.session.user?.username ? S.as : (S.session.user?.username || "");
   S.editDomain = prefill.domain || "";
   const dv = await api("domains").catch(() => ({ enabled: [], primary: "" }));
-  const pick = prefill.domain || dv.primary || dv.enabled[0] || "";
+  // a domain picked on the Inbox screen wins for new mail, unless this is an
+  // edit or a reply, whose own From should not move under the user
+  const saved = savedDomain();
+  const pick = prefill.domain || (dv.enabled.includes(saved) ? saved : "") || dv.primary || dv.enabled[0] || "";
   const fromRow = `<div class="fromrow">From ${
     dv.enabled.length > 1
       ? `<div class="selpick"><select class="input" id="fDomain" style="width:auto;padding:3px 26px 3px 8px;font-size:12px">${dv.enabled.map((z) => `<option value="${h(z)}" ${z === pick ? "selected" : ""}>${h(who)}@${h(z)}</option>`).join("")}</select></div>`
@@ -577,20 +599,16 @@ async function viewDns() {
   const st = await api("state").catch(() => ({}));
   const dv = await api("domains").catch(() => ({ enabled: [], all: [], primary: "" }));
   const admin = isAdmin();
-  const pick = S.dnsDomain && dv.enabled.includes(S.dnsDomain) ? S.dnsDomain : (dv.primary || dv.enabled[0] || "");
-  app.innerHTML = head("DNS", "The records that bring mail in, ready-made: the default relay domains are filled in.")
-    + (dv.enabled.length > 1 ? `<div class="row" style="margin-bottom:12px"><span class="faint small">Domain</span><div class="selpick"><select class="input" id="dnsPick" style="width:auto">${dv.enabled.map((z) => `<option value="${h(z)}" ${z === pick ? "selected" : ""}>${h(z)}</option>`).join("")}</select></div></div>` : "")
+  app.innerHTML = head("DNS", "The records that bring mail in, ready-made: the default relay domains are filled in. Every served domain is checked at once.")
     + (admin && dv.all.length ? `<div class="card" style="margin-bottom:14px"><h3>Served domains <span class="faint">— mail for any of these lands here</span></h3>
         ${dv.all.map((z) => `<div class="switchrow"><div class="grow"><b class="mono">${h(z)}</b>${z === dv.primary ? ' <span class="pill">primary</span>' : ""}</div>
           <label class="switch"><input type="checkbox" data-dom="${h(z)}" ${dv.enabled.includes(z) ? "checked" : ""} ${z === dv.primary ? "disabled" : ""}><i></i></label></div>`).join("")}
       </div>` : "")
     + (st.inbound ? "" : `<div class="note">The inbound address isn't published yet, so the <span class="mono">forward-email</span> record shows its placeholder.</div>`)
-    + `<div class="row" style="margin-bottom:14px"><button class="btn primary" id="dnsCheckBtn">Check again</button><span class="faint small">against public DNS, and the inbound address itself</span></div>
+    + `<div class="row" style="margin-bottom:14px"><button class="btn primary" id="dnsCheckBtn">Check every domain again</button><span class="faint small">against public DNS, and the inbound address itself</span></div>
        <div class="note" id="dnsMsg" hidden></div>
-       <div class="scroll"><table id="dnsTable"></table></div>`;
+       <div id="dnsWrap"></div>`;
   $("#dnsCheckBtn").addEventListener("click", checkDns);
-  const sel = $("#dnsPick");
-  if (sel) sel.addEventListener("change", () => { S.dnsDomain = sel.value; checkDns(); });
   for (const sw of app.querySelectorAll("[data-dom]")) sw.addEventListener("change", async () => {
     try { await api("admin/domains", { method: "PUT", body: { domain: sw.dataset.dom, on: sw.checked } }); toast(`${sw.dataset.dom} ${sw.checked ? "served" : "off"}.`); viewDns(); }
     catch (e) { toast(e.message); viewDns(); }
@@ -598,36 +616,51 @@ async function viewDns() {
   checkDns();          // the truth on arrival, not only on request
 }
 async function checkDns() {
-  const b = $("#dnsCheckBtn"), t = $("#dnsTable");
+  const b = $("#dnsCheckBtn"), wrap = $("#dnsWrap");
   if (!b) return;
-  if (t) t.innerHTML = `<tr><td><span class="spin"></span> Asking public DNS…</td></tr>`;
+  if (wrap) wrap.innerHTML = `<div class="scroll"><table><tr><td><span class="spin"></span> Asking public DNS about every served domain…</td></tr></table></div>`;
   b.disabled = true; b.textContent = "Resolving…";
   try {
-    const d = await api(`dns-check${S.dnsDomain ? `?domain=${encodeURIComponent(S.dnsDomain)}` : ""}`);
+    const d = await api("dns-check");
     const p = d.inbound || { ok: false, url: "", detail: "not checked" };
-    // the last row is not a DNS record: it is the inbound address, asked from
+    const doms = d.domains || [];
+    // one section per served domain, so a domain nobody added records for is
+    // obvious instead of hiding behind whichever one happens to be primary
+    wrap.innerHTML = doms.map((x, i) => `
+      <div class="card" style="margin-bottom:14px">
+        <h3 class="mono" style="margin-bottom:10px">${h(x.domain)} ${x.ok === x.total ? '<span class="pill ok">ready</span>' : `<span class="pill bad">${x.ok} of ${x.total} in place</span>`}</h3>
+        <div class="scroll"><table id="dnsTable-${i}"></table></div>
+      </div>`).join("")
+      + `<div class="card" style="margin-bottom:14px"><h3 style="margin-bottom:10px">The inbound address <span class="faint">— the one place every domain above hands its mail to</span></h3><div class="scroll"><table id="dnsTable-probe"></table></div></div>`;
+    doms.forEach((x, i) => drawDns(x.records, $(`#dnsTable-${i}`)));
+    // the probe row is not a DNS record: it is the inbound address, asked from
     // outside. Records being in place mean nothing if it stays silent.
-    const rows = [...d.records, {
+    drawDns([{
       key: "probe", type: "Ping", name: "the inbound address",
       content: p.url || "(not published)", note: "The relay POSTs mail here; this row asks the address itself, across the internet.",
       ok: p.ok, found: p.ok ? "answers" : (p.detail || ""), detail: p.ok ? "" : (p.detail || ""),
-    }];
-    drawDns(rows);
+    }], $("#dnsTable-probe"));
     const el = $("#dnsMsg");
     el.hidden = false;
     el.className = "note " + (d.allGood ? "ok" : "bad");
-    el.textContent = d.allGood
-      ? `Every record answers (${d.ok}/${d.total}) and the inbound address answers from the internet. Mail can flow.`
-      : !p.url
-        ? "There is no inbound address yet — the host hasn't published the tunnel, so nothing in DNS can bring mail in. Check the Status page."
-        : !p.ok
-          ? `The records are ${d.ok}/${d.total}, but the inbound address does not answer from outside (${p.detail}). Mail will not arrive until it does — the tunnel may be down.`
-          : `${d.ok} of ${d.total} in place — records just added take a few minutes to show. Selfmail cannot add them for you: paste each Value into your DNS panel yourself.`;
-  } catch (e) { const el = $("#dnsMsg"); el.hidden = false; el.className = "note bad"; el.textContent = e.message; if (t) t.innerHTML = `<tr><td>${h(e.message)}</td></tr>`; }
-  finally { b.disabled = false; b.textContent = "Check again"; }
+    const ready = doms.filter((x) => x.ok === x.total).map((x) => x.domain);
+    const lagging = doms.filter((x) => x.ok < x.total);
+    const lagText = lagging.map((x) => x.ok === 0 ? `${x.domain} has no records in DNS yet` : `${x.domain} is ${x.ok} of ${x.total} in place`).join("; ");
+    el.textContent = !doms.length
+      ? "No domains are served yet — mail for a served domain lands here, so turn one on first."
+      : d.allGood
+        ? `Every domain is ready (${d.ok}/${d.total} records) and the inbound address answers from the internet. Mail can flow.`
+        : !p.url
+          ? "There is no inbound address yet — the host hasn't published the tunnel, so nothing in DNS can bring mail in. Check the Status page."
+          : !p.ok
+            ? `The records are ${d.ok}/${d.total}, but the inbound address does not answer from outside (${p.detail}). Mail will not arrive until it does — the tunnel may be down.`
+            : `${ready.length ? ready.join(", ") + (ready.length > 1 ? " are" : " is") + " ready. " : ""}${lagText}. Each domain needs its own records — paste the missing Values into your DNS panel for that domain. Records just added take a few minutes to show.`;
+  } catch (e) { const el = $("#dnsMsg"); el.hidden = false; el.className = "note bad"; el.textContent = e.message; if (wrap) wrap.innerHTML = `<div class="scroll"><table><tr><td>${h(e.message)}</td></tr></table></div>`; }
+  finally { b.disabled = false; b.textContent = "Check every domain again"; }
 }
-function drawDns(rows) {
-  $("#dnsTable").innerHTML = `<tr><th>Type</th><th>Name</th><th>Value</th><th>Why</th><th>Public DNS says</th></tr>` +
+function drawDns(rows, table) {
+  if (!table) return;
+  table.innerHTML = `<tr><th>Type</th><th>Name</th><th>Value</th><th>Why</th><th>Public DNS says</th></tr>` +
     rows.map((r) => {
       const cell = r.ok == null
         ? `<span class="faint">—</span>${r.detail ? `<div class="faint small">${h(r.detail)}</div>` : ""}`
@@ -637,7 +670,7 @@ function drawDns(rows) {
       const copy = r.content && !String(r.content).includes("YOUR-") ? `<button class="btn sm ghost" data-copy="${h(r.content)}" title="Copy this value for your DNS panel">copy</button>` : "";
       return `<tr><td><b>${r.type}</b>${r.priority != null ? ` ${r.priority}` : ""}</td><td><code>${h(r.name)}</code></td><td><div class="row" style="gap:6px;flex-wrap:wrap"><code>${h(r.content)}</code>${copy}</div></td><td class="muted small">${h(r.note || "")}</td><td>${cell}</td></tr>`;
     }).join("");
-  for (const b of $("#dnsTable").querySelectorAll("[data-copy]")) b.addEventListener("click", async () => {
+  for (const b of table.querySelectorAll("[data-copy]")) b.addEventListener("click", async () => {
     try { await navigator.clipboard.writeText(b.dataset.copy); toast("Copied — paste it into your DNS panel."); }
     catch { toast("Couldn't copy from here — select the value and copy by hand."); }
   });

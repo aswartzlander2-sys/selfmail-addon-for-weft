@@ -203,3 +203,4 @@ select.input { appearance: none; background-image: none; padding-right: 30px; }
 
 /* ---- compose: the From line, its own row (never inside the head's <p>) ---- */
 .fromrow { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin: -8px 0 14px; color: var(--muted); font-size: 12.5px; }
+.dompick { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 12.5px; } /* Inbox sending-domain pick */

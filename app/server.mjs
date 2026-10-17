@@ -635,17 +635,22 @@ const server = createServer(async (req, res) => {
       if (path === "/api/dns-check" && req.method === "GET") {
         const g = gate(); if (g.deny) return send(res, g.deny.status, g.deny.json);
         const ip = await publicIp();
-        const d = dnsDomain();
         const inUrl = inboundUrl();
-        const records = dnsRecords({ domain: d, webhookUrl: inUrl, publicIp: ip, mailbox: appConfig(DATA).mailbox });
-        const rows = await checkDns(records);
-        // A hook record holding the placeholder can never be "in place": the
-        // placeholder matches itself green, and the relay would be POSTing at
-        // a URL that was never real. No inbound address, no green.
-        for (const r of rows) if (r.key === "hook" && !inUrl) {
-          r.ok = false;
-          r.detail = "The inbound address isn't published yet, so this row cannot honestly go green — the relay would have nowhere to deliver.";
-        }
+        // every served domain, not just the one you happened to be looking at:
+        // a domain whose records were never added is a surprise no one needs
+        const list = enabledDomains();
+        const perDomain = await Promise.all(list.map(async (d) => {
+          const records = dnsRecords({ domain: d, webhookUrl: inUrl, publicIp: ip, mailbox: appConfig(DATA).mailbox });
+          const rows = await checkDns(records);
+          // A hook record holding the placeholder can never be "in place": the
+          // placeholder matches itself green, and the relay would be POSTing at
+          // a URL that was never real. No inbound address, no green.
+          for (const r of rows) if (r.key === "hook" && !inUrl) {
+            r.ok = false;
+            r.detail = "The inbound address isn't published yet, so this row cannot honestly go green — the relay would have nowhere to deliver.";
+          }
+          return { domain: d, records: rows, ok: rows.filter((r) => r.ok).length, total: rows.length };
+        }));
         // Prove the whole way in, not just the records: ask the inbound address
         // itself, across the internet, whether it answers.
         const probe = { ok: false, url: inUrl, detail: "" };
@@ -666,12 +671,13 @@ const server = createServer(async (req, res) => {
               }
             }
             probe.ok = pr.ok;
-            if (!pr.ok) probe.detail = `the tunnel answered HTTP ${pr.status}`;
+            if (!probe.ok) probe.detail = `the tunnel answered HTTP ${pr.status}`;
             else probe.ms = Date.now() - t0;
           } catch (e) { probe.detail = `it doesn't answer from outside (${e.name === "TimeoutError" || e.name === "AbortError" ? "timed out" : e.message})`; }
         }
-        const ok = rows.filter((r) => r.ok).length;
-        return send(res, 200, { domain: d, records: rows, ok, total: rows.length, inbound: probe, allGood: ok === rows.length && probe.ok });
+        const ok = perDomain.reduce((n, x) => n + x.ok, 0);
+        const total = perDomain.reduce((n, x) => n + x.total, 0);
+        return send(res, 200, { domains: perDomain, ok, total, inbound: probe, allGood: !!perDomain.length && ok === total && probe.ok });
       }
       if (path === "/api/mta" && req.method === "GET") {
         const g = gate(); if (g.deny) return send(res, g.deny.status, g.deny.json);

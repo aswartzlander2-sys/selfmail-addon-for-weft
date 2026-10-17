@@ -56,9 +56,12 @@ export function appConfig(dataDir) {
     publishError: String(state.error || ""),
     zoneLinked: !!state.zone,
     // every domain this machine has: what the extension keeps fresh in
-    // state.json, plus what the install script seeded into config.json
+    // state.json, plus what the install script seeded into config.json.
+    // Entries may be plain strings or {zone:…}-shaped (state files written by
+    // other hands): both are taken, as clean lowercase strings — never
+    // String(object), which turns a domain into "[object object]".
     domains: [...new Set([
-      ...(Array.isArray(state.domains) ? state.domains : []).map((d) => String(d || "").trim().toLowerCase()).filter(Boolean),
+      ...(Array.isArray(state.domains) ? state.domains : []).map((d) => (typeof d === "string" ? d : String((d && (d.zone || d.domain || d.name || d.host)) || ""))).map((d) => d.trim().toLowerCase()).filter(Boolean),
       ...String(conf.mail_domains || "").split(",").map((d) => d.trim().toLowerCase()).filter(Boolean),
     ])],
   };
